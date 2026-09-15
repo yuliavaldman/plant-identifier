@@ -49,17 +49,25 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       return res.status(500).json({ error: 'מפתח API של Anthropic לא הוגדר. יש לעדכן את קובץ .env' });
     }
 
-    // Use SSE to keep connection alive on Render free tier (30s timeout)
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    });
+    // Use chunked plain text with heartbeats to keep Render connection alive
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.flushHeaders();
 
-    // Send heartbeats every 10s to prevent timeout
+    // Send a space every 8s to keep connection alive
     const heartbeat = setInterval(() => {
-      res.write('event: heartbeat\ndata: {}\n\n');
-    }, 10000);
+      try { res.write(' '); } catch(e) {}
+    }, 8000);
+
+    // Safety timeout — always end the response after 90s
+    const safetyTimeout = setTimeout(() => {
+      clearInterval(heartbeat);
+      try {
+        res.write('\n' + JSON.stringify({ error: 'הניתוח לקח יותר מדי זמן. נסו שוב.' }));
+        res.end();
+      } catch(e) {}
+    }, 90000);
 
     const compressed = await compressImage(req.file.buffer, req.file.mimetype);
     const imageBase64 = compressed.buffer.toString('base64');
@@ -79,24 +87,33 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     if (!claude) {
       clearInterval(heartbeat);
+      clearTimeout(safetyTimeout);
       const errMsg = claudeResult.reason?.message || 'שגיאה בניתוח התמונה';
-      res.write(`event: error\ndata: ${JSON.stringify({ error: errMsg })}\n\n`);
+      res.write('\n' + JSON.stringify({ error: errMsg }));
       res.end();
       return;
     }
 
-    // Verify identification with Wikipedia/Wikidata
+    // Verify with Wikipedia (with a short timeout so it doesn't hang)
     const sciName = claude?.identification?.scientificName;
-    const wikiResult = await verifyWithWikipedia(sciName).catch(() => null);
-
-    // Also verify top alternative if main ID not found in Wikipedia
+    let wikiResult = null;
     let altWikiResult = null;
-    if (wikiResult && !wikiResult.verified && claude?.identification?.alternativeMatches?.length > 0) {
-      const altName = claude.identification.alternativeMatches[0].scientificName;
-      altWikiResult = await verifyWithWikipedia(altName).catch(() => null);
-    }
+    try {
+      wikiResult = await Promise.race([
+        verifyWithWikipedia(sciName),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 6000))
+      ]);
+      if (wikiResult && !wikiResult.verified && claude?.identification?.alternativeMatches?.length > 0) {
+        const altName = claude.identification.alternativeMatches[0].scientificName;
+        altWikiResult = await Promise.race([
+          verifyWithWikipedia(altName),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 6000))
+        ]);
+      }
+    } catch(e) {}
 
     clearInterval(heartbeat);
+    clearTimeout(safetyTimeout);
 
     const crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult);
 
@@ -107,12 +124,14 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       timestamp: new Date().toISOString()
     };
 
-    res.write(`event: result\ndata: ${JSON.stringify(result)}\n\n`);
+    res.write('\n' + JSON.stringify(result));
     res.end();
   } catch (error) {
     console.error('Analysis error:', error);
-    res.write(`event: error\ndata: ${JSON.stringify({ error: 'שגיאה בניתוח התמונה. נסו שוב.' })}\n\n`);
-    res.end();
+    try {
+      res.write('\n' + JSON.stringify({ error: 'שגיאה בניתוח התמונה. נסו שוב.' }));
+      res.end();
+    } catch(e) {}
   }
 });
 

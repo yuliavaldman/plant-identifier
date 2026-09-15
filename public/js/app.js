@@ -173,30 +173,27 @@ document.addEventListener('DOMContentLoaded', () => {
       clearInterval(stepInterval);
       clearInterval(timerInterval);
 
-      // Non-SSE error responses (multer, missing file, etc.)
-      const contentType = response.headers.get('content-type') || '';
-      if (!response.ok || contentType.includes('application/json')) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || 'שגיאה בניתוח התמונה');
-      }
-
-      // Parse SSE response
       const text = await response.text();
-      let data = null;
-      let errorMsg = null;
 
-      for (const block of text.split('\n\n')) {
-        if (block.startsWith('event: result')) {
-          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
-          if (dataLine) data = JSON.parse(dataLine.slice(6));
-        } else if (block.startsWith('event: error')) {
-          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
-          if (dataLine) errorMsg = JSON.parse(dataLine.slice(6)).error;
+      // The response is heartbeat spaces followed by a JSON line
+      const jsonStr = text.trim();
+      if (!jsonStr) throw new Error('לא התקבלה תשובה מהשרת');
+
+      let data;
+      try {
+        data = JSON.parse(jsonStr);
+      } catch(e) {
+        // Try to find JSON in the text (after heartbeat spaces)
+        const lastBrace = jsonStr.lastIndexOf('}');
+        const firstBrace = jsonStr.indexOf('{');
+        if (firstBrace !== -1 && lastBrace !== -1) {
+          data = JSON.parse(jsonStr.substring(firstBrace, lastBrace + 1));
+        } else {
+          throw new Error('שגיאה בפענוח תשובת השרת');
         }
       }
 
-      if (errorMsg) throw new Error(errorMsg);
-      if (!data) throw new Error('לא התקבלה תשובה מהשרת');
+      if (data.error) throw new Error(data.error);
 
       if (data.analysis && !data.analysis.isPlant) {
         showError(
