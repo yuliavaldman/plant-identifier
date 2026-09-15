@@ -392,44 +392,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     card.hidden = false;
-    const typeIcons = {
-      disease: '🦠', pest: '🐛', nutrient: '🧪', environmental: '🌡️', watering: '💧'
-    };
-
     let html = '';
     for (const issue of a.issues) {
-      const icon = typeIcons[issue.type] || '⚠️';
       html += `
         <div class="issue-item">
           <div class="issue-header">
-            <span class="issue-name">${icon} ${esc(issue.name || '')}</span>
+            <span class="issue-name">⚠️ ${esc(issue.name || '')}</span>
             <span class="severity-badge severity-${issue.severity || 'medium'}">${
               {low: 'נמוך', medium: 'בינוני', high: 'גבוה', critical: 'קריטי'}[issue.severity] || issue.severity
             }</span>
           </div>
           <p class="issue-description">${esc(issue.description || '')}</p>`;
 
-      if (issue.visibleSymptoms && issue.visibleSymptoms.length > 0) {
-        html += `<div class="issue-subsection"><h5>סימפטומים נראים:</h5><ul>`;
-        for (const s of issue.visibleSymptoms) html += `<li>${esc(s)}</li>`;
-        html += `</ul></div>`;
-      }
-
       if (issue.treatment) {
         const t = issue.treatment;
-        html += `<div class="issue-subsection"><h5>טיפול:</h5>`;
-        if (t.immediate) html += `<p><strong>מיידי:</strong> ${esc(t.immediate)}</p>`;
-        if (t.ongoing) html += `<p><strong>מתמשך:</strong> ${esc(t.ongoing)}</p>`;
-        if (t.products) html += `<p><strong>מוצרים מומלצים:</strong> ${esc(t.products)}</p>`;
-        html += `</div>`;
-      }
-
-      if (issue.prevention) {
-        html += `<div class="issue-subsection"><h5>מניעה:</h5><p>${esc(issue.prevention)}</p></div>`;
-      }
-
-      if (issue.urgency) {
-        html += `<div class="issue-subsection"><h5>דחיפות:</h5><p>${esc(issue.urgency)}</p></div>`;
+        if (typeof t === 'string') {
+          html += `<div class="issue-subsection"><h5>טיפול:</h5><p>${esc(t)}</p></div>`;
+        } else {
+          html += `<div class="issue-subsection"><h5>טיפול:</h5>`;
+          if (t.immediate) html += `<p><strong>מיידי:</strong> ${esc(t.immediate)}</p>`;
+          if (t.ongoing) html += `<p><strong>מתמשך:</strong> ${esc(t.ongoing)}</p>`;
+          html += `</div>`;
+        }
       }
 
       html += `</div>`;
@@ -443,26 +427,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!care) return;
 
     const items = [
-      { key: 'water', icon: '💧', title: 'השקיה', fields: ['frequency', 'amount', 'method', 'tips'] },
-      { key: 'light', icon: '☀️', title: 'תאורה', fields: ['description', 'hours', 'placement', 'tips'] },
-      { key: 'soil', icon: '🪴', title: 'אדמה', fields: ['type', 'drainage', 'ph', 'tips'] },
-      { key: 'temperature', icon: '🌡️', title: 'טמפרטורה', fields: ['description', 'frostTolerance', 'tips'] },
-      { key: 'humidity', icon: '💨', title: 'לחות', fields: ['percentage', 'tips'] },
-      { key: 'fertilizer', icon: '🧪', title: 'דישון', fields: ['type', 'frequency', 'season', 'tips'] },
-      { key: 'pruning', icon: '✂️', title: 'גיזום', fields: ['when', 'how', 'tips'] },
-      { key: 'repotting', icon: '🏺', title: 'החלפת עציץ', fields: ['frequency', 'signs', 'bestSeason', 'tips'] }
+      { key: 'water', icon: '💧', title: 'השקיה' },
+      { key: 'light', icon: '☀️', title: 'תאורה' },
+      { key: 'soil', icon: '🪴', title: 'אדמה' },
+      { key: 'temperature', icon: '🌡️', title: 'טמפרטורה' },
+      { key: 'fertilizer', icon: '🧪', title: 'דישון' },
+      { key: 'pruning', icon: '✂️', title: 'גיזום' }
     ];
-
-    const fieldLabels = {
-      frequency: 'תדירות', amount: 'כמות', method: 'שיטה', tips: 'טיפ',
-      description: 'תיאור', hours: 'שעות', placement: 'מיקום',
-      type: 'סוג', drainage: 'ניקוז', ph: 'pH', amendments: 'תוספות',
-      frostTolerance: 'עמידות בכפור',
-      percentage: 'אחוז',
-      npk: 'NPK', season: 'עונה',
-      when: 'מתי', how: 'איך',
-      signs: 'סימנים', bestSeason: 'עונה מומלצת'
-    };
 
     let html = '<div class="care-grid">';
     for (const item of items) {
@@ -476,18 +447,12 @@ document.addEventListener('DOMContentLoaded', () => {
             ${item.title}
           </div>`;
 
-      for (const field of item.fields) {
-        const val = data[field];
-        if (!val) continue;
-        if (field === 'tips') {
-          html += `<div class="care-tip">${esc(val)}</div>`;
-        } else {
-          html += `<div class="care-detail"><strong>${fieldLabels[field] || field}:</strong> ${esc(String(val))}</div>`;
+      if (typeof data === 'string') {
+        html += `<div class="care-detail">${esc(data)}</div>`;
+      } else if (typeof data === 'object') {
+        for (const [k, v] of Object.entries(data)) {
+          if (v) html += `<div class="care-detail">${esc(String(v))}</div>`;
         }
-      }
-
-      if (item.key === 'temperature' && data.idealMin != null && data.idealMax != null) {
-        html += `<div class="care-detail"><strong>טווח אידאלי:</strong> ${data.idealMin}°C — ${data.idealMax}°C</div>`;
       }
 
       html += `</div>`;
