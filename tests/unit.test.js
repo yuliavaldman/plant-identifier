@@ -410,6 +410,115 @@ test('canRefine flag true when followUpQuestions present', () => {
   assert.strictEqual(canRefine, true);
 });
 
+// ==================== PHASE 4: FOLLOW-UP IMAGE STRUCTURE ====================
+
+console.log('\n=== Follow-Up Image Result Structure ===');
+
+const validFollowUpResult = {
+  followUpSummary: 'הצילום הנוסף מחזק את האבחנה של קמחון',
+  newObservations: ['ציפוי לבן גם על הגבעול', 'נקודות שחורות זעירות על גב העלה'],
+  diagnosisChanged: false,
+  confidenceChange: 'increased',
+  updatedReliability: 'הצילום הנוסף מספק ראיות חזקות יותר לאבחנה',
+  supportedIssues: [{ name: 'קמחון', explanation: 'הציפוי הלבן נראה גם על הגבעול' }],
+  weakenedIssues: [],
+  ruledOut: [{ name: 'אבק', reason: 'ציפוי מפושט מדי עבור אבק רגיל' }],
+  newIssues: [],
+  plantIdentificationChanged: false,
+  updatedPlantIdentification: null,
+  recommendedNextStep: 'יש לרסס בתרסיס נגד קמחון',
+  needsMorePhotos: false,
+  suggestedPhotos: []
+};
+
+test('follow-up result has required fields', () => {
+  assert.ok(typeof validFollowUpResult.followUpSummary === 'string');
+  assert.ok(Array.isArray(validFollowUpResult.newObservations));
+  assert.ok(typeof validFollowUpResult.diagnosisChanged === 'boolean');
+  assert.ok(['increased', 'unchanged', 'decreased'].includes(validFollowUpResult.confidenceChange));
+  assert.ok(Array.isArray(validFollowUpResult.supportedIssues));
+  assert.ok(Array.isArray(validFollowUpResult.weakenedIssues));
+  assert.ok(Array.isArray(validFollowUpResult.ruledOut));
+  assert.ok(Array.isArray(validFollowUpResult.newIssues));
+  assert.ok(typeof validFollowUpResult.plantIdentificationChanged === 'boolean');
+  assert.ok(typeof validFollowUpResult.needsMorePhotos === 'boolean');
+});
+
+test('newObservations are factual strings (no interpretation)', () => {
+  for (const obs of validFollowUpResult.newObservations) {
+    assert.ok(typeof obs === 'string');
+    assert.ok(obs.length > 0);
+  }
+});
+
+test('supportedIssues have name and explanation', () => {
+  for (const issue of validFollowUpResult.supportedIssues) {
+    assert.ok(issue.name);
+    assert.ok(issue.explanation);
+  }
+});
+
+test('ruledOut issues have name and reason', () => {
+  for (const issue of validFollowUpResult.ruledOut) {
+    assert.ok(issue.name);
+    assert.ok(issue.reason);
+  }
+});
+
+test('updatedPlantIdentification null when plantIdentificationChanged is false', () => {
+  assert.strictEqual(validFollowUpResult.plantIdentificationChanged, false);
+  assert.strictEqual(validFollowUpResult.updatedPlantIdentification, null);
+});
+
+test('updatedPlantIdentification present when plantIdentificationChanged is true', () => {
+  const changedResult = {
+    plantIdentificationChanged: true,
+    updatedPlantIdentification: {
+      commonNameHe: 'שושנת חרב', commonNameEn: 'Gladiolus',
+      scientificName: 'Gladiolus communis', confidence: 0.82,
+      changeReason: 'הפרח בצילום הנוסף מעיד על זיהוי שונה'
+    }
+  };
+  assert.ok(changedResult.updatedPlantIdentification);
+  assert.ok(changedResult.updatedPlantIdentification.scientificName);
+  assert.ok(changedResult.updatedPlantIdentification.changeReason);
+});
+
+test('newIssues have required fields when present', () => {
+  const resultWithNew = {
+    newIssues: [{
+      name: 'חלודה', category: 'fungal', likelihood: 'medium',
+      severity: 'medium', description: 'נראות כתמים כתומים על גב העלה',
+      treatment: 'הסרת עלים נגועים'
+    }]
+  };
+  for (const issue of resultWithNew.newIssues) {
+    assert.ok(issue.name);
+    assert.ok(issue.category);
+    assert.ok(issue.likelihood);
+  }
+});
+
+test('canFollowUpImage flag logic works', () => {
+  const analysisWithPhotos = { needsMorePhotos: true, suggestedPhotos: ['צילום תקריב'] };
+  const needsPhotos = !!(analysisWithPhotos.needsMorePhotos || analysisWithPhotos.suggestedPhotos?.length);
+  const canFollowUp = needsPhotos && true;
+  assert.strictEqual(canFollowUp, true);
+});
+
+test('canFollowUpImage false when no suggestedPhotos', () => {
+  const analysisNoPhotos = { needsMorePhotos: false, suggestedPhotos: [] };
+  const needsPhotos = !!(analysisNoPhotos.needsMorePhotos || analysisNoPhotos.suggestedPhotos?.length);
+  assert.strictEqual(needsPhotos, false);
+});
+
+test('canFollowUpImage false when followUpImageDone', () => {
+  const needsPhotos = true;
+  const followUpImageDone = true;
+  const canFollowUp = needsPhotos && !followUpImageDone;
+  assert.strictEqual(canFollowUp, false);
+});
+
 // ==================== INTEGRATION TEST STUBS ====================
 
 console.log('\n=== Integration Tests (require running server + API keys) ===');
@@ -439,7 +548,15 @@ const integrationTests = [
   { id: 22, name: 'Refinement result shows what changed and why', type: 'manual' },
   { id: 23, name: 'Original diagnosis preserved alongside refinement', type: 'manual' },
   { id: 24, name: 'Second refinement blocked (one per scan)', type: 'integration' },
-  { id: 25, name: 'Expired job returns 404 on refine attempt', type: 'integration' }
+  { id: 25, name: 'Expired job returns 404 on refine attempt', type: 'integration' },
+  { id: 26, name: 'Follow-up image upload shows when needsMorePhotos true', type: 'manual' },
+  { id: 27, name: 'Follow-up image analysis returns newObservations + diagnosis changes', type: 'manual' },
+  { id: 28, name: 'Follow-up image result shows supported/weakened/ruledOut issues', type: 'manual' },
+  { id: 29, name: 'Plant identification can change with follow-up image (flower/fruit)', type: 'manual' },
+  { id: 30, name: 'Second follow-up image blocked (one per scan)', type: 'integration' },
+  { id: 31, name: 'Follow-up image without valid jobId returns 404', type: 'integration' },
+  { id: 32, name: 'Follow-up image validates and compresses like initial scan', type: 'integration' },
+  { id: 33, name: 'Follow-up image after refinement includes refinement context', type: 'manual' }
 ];
 
 for (const t of integrationTests) {

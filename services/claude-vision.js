@@ -260,4 +260,134 @@ ${REFINEMENT_JSON_SCHEMA}`;
   }
 }
 
-module.exports = { analyzeWithClaude, refineWithClaude };
+const FOLLOWUP_IMAGE_PROMPT = `You are refining a previous plant diagnosis based on a NEW follow-up image provided by the user.
+Return ONLY valid JSON (no markdown fences). All text in Hebrew.
+
+RULES:
+- This is a CONTINUATION of the same diagnosis, NOT a new scan.
+- Compare what you see in the new image with the previous diagnosis data.
+- Separate OBSERVATIONS (what you see in the new image) from INTERPRETATION (how it changes the diagnosis).
+- newObservations must contain ONLY factual descriptions of what is visible — no interpretation.
+- If the new image shows a flower, fruit, bark, or clearer structure that was missing before, the plant identification CAN change.
+- If identification changes, explain what new feature led to the change.
+- Explain what changed and why in followUpSummary (e.g. "הצילום הנוסף מחזק את האבחנה..." or "הצילום הנוסף מגלה...").
+- Do NOT invent observations not visible in the new image.
+- If the new image doesn't add useful information, say so honestly.
+
+TREATMENT SAFETY:
+- Same rules as initial analysis: never recommend aggressive treatment without high confidence.
+`;
+
+const FOLLOWUP_IMAGE_JSON_SCHEMA = `
+Return JSON:
+{
+  "followUpSummary": "Hebrew paragraph explaining what the new image reveals and how it affects the diagnosis",
+  "newObservations": ["factual observation 1 from new image", "factual observation 2"],
+  "diagnosisChanged": true|false,
+  "confidenceChange": "increased|unchanged|decreased",
+  "updatedReliability": "Hebrew text about overall reliability after this additional evidence",
+  "supportedIssues": [{"name":"issue name","explanation":"why this issue is now more supported"}],
+  "weakenedIssues": [{"name":"issue name","explanation":"why this issue is now less likely"}],
+  "ruledOut": [{"name":"issue name","reason":"why ruled out based on new image"}],
+  "newIssues": [{"name":"new issue","category":"pest|fungal|...|unknown","likelihood":"high|medium|low","severity":"low|medium|high","description":"what was seen","treatment":"safe treatment"}],
+  "plantIdentificationChanged": true|false,
+  "updatedPlantIdentification": {"commonNameHe":"...","commonNameEn":"...","scientificName":"...","confidence":0.85,"changeReason":"why identification changed"} | null,
+  "recommendedNextStep": "Hebrew text",
+  "needsMorePhotos": true|false,
+  "suggestedPhotos": ["if more photos still needed"]
+}`;
+
+async function analyzeFollowUpImage(originalAnalysis, refinementResult, answers, newImageBase64, newImageMimetype, originalImageBase64, originalImageMimetype) {
+  const content = [];
+
+  if (originalImageBase64) {
+    const origMediaType = originalImageMimetype === 'image/png' ? 'image/png'
+      : originalImageMimetype === 'image/webp' ? 'image/webp'
+      : originalImageMimetype === 'image/gif' ? 'image/gif'
+      : 'image/jpeg';
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: origMediaType, data: originalImageBase64 }
+    });
+  }
+
+  const newMediaType = newImageMimetype === 'image/png' ? 'image/png'
+    : newImageMimetype === 'image/webp' ? 'image/webp'
+    : newImageMimetype === 'image/gif' ? 'image/gif'
+    : 'image/jpeg';
+  content.push({
+    type: 'image',
+    source: { type: 'base64', media_type: newMediaType, data: newImageBase64 }
+  });
+
+  let contextBlock = `
+${originalImageBase64 ? 'The FIRST image is the original scan. The SECOND image is the new follow-up image.' : 'You do not have the original image. The image shown is the NEW follow-up image.'}
+
+PREVIOUS PLANT IDENTIFICATION:
+${JSON.stringify(originalAnalysis.identification || {}, null, 2)}
+
+PREVIOUS OBSERVATIONS:
+${JSON.stringify(originalAnalysis.observations || [], null, 2)}
+
+PREVIOUS ISSUES:
+${JSON.stringify(originalAnalysis.issues || [], null, 2)}
+
+PREVIOUS HEALTH ASSESSMENT:
+${JSON.stringify(originalAnalysis.healthAssessment || {}, null, 2)}
+`;
+
+  if (refinementResult) {
+    contextBlock += `
+REFINEMENT RESULT (from user answers):
+${JSON.stringify(refinementResult, null, 2)}
+`;
+  }
+
+  if (answers && answers.length > 0) {
+    contextBlock += `
+USER ANSWERS TO FOLLOW-UP QUESTIONS:
+${JSON.stringify(answers, null, 2)}
+`;
+  }
+
+  contextBlock += FOLLOWUP_IMAGE_JSON_SCHEMA;
+
+  content.push({
+    type: 'text',
+    text: FOLLOWUP_IMAGE_PROMPT + contextBlock
+  });
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 5000,
+    messages: [{ role: 'user', content }]
+  });
+
+  const textBlock = response.content.find(b => b.type === 'text');
+  if (!textBlock) {
+    throw new Error('לא התקבלה תשובה מהמודל');
+  }
+
+  const text = textBlock.text.trim();
+  let jsonStr = text;
+
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    jsonStr = fenceMatch[1].trim();
+  } else {
+    const braceStart = text.indexOf('{');
+    const braceEnd = text.lastIndexOf('}');
+    if (braceStart !== -1 && braceEnd > braceStart) {
+      jsonStr = text.substring(braceStart, braceEnd + 1);
+    }
+  }
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error('Failed to parse follow-up image response (first 500 chars):', text.substring(0, 500));
+    throw new Error('שגיאה בפענוח תשובת ניתוח הצילום הנוסף. נסו שוב.');
+  }
+}
+
+module.exports = { analyzeWithClaude, refineWithClaude, analyzeFollowUpImage };

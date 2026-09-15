@@ -3,7 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const sharp = require('sharp');
-const { analyzeWithClaude, refineWithClaude } = require('./services/claude-vision');
+const { analyzeWithClaude, refineWithClaude, analyzeFollowUpImage } = require('./services/claude-vision');
 const { identifyWithPlantNet } = require('./services/plantnet');
 const { verifyWithWikipedia } = require('./services/wiki-verify');
 
@@ -324,7 +324,9 @@ app.get('/api/result/:jobId', (req, res) => {
   }
   const result = job.result;
   const hasFollowUp = Array.isArray(result.analysis?.followUpQuestions) && result.analysis.followUpQuestions.length > 0;
-  res.json({ status: 'done', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, ...result });
+  const needsPhotos = !!(result.analysis?.needsMorePhotos || result.analysis?.suggestedPhotos?.length);
+  const canFollowUpImage = needsPhotos && !job.followUpImageDone;
+  res.json({ status: 'done', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, canFollowUpImage, ...result });
 });
 
 function confidenceLevelText(conf) {
@@ -554,12 +556,85 @@ app.post('/api/refine-diagnosis', async (req, res) => {
     console.log(`[refine:${jobId}] Done in ${duration}ms, changed: ${refinement.diagnosisChanged}`);
 
     job.refined = true;
+    job.refinementResult = refinement;
     job.created = Date.now();
 
     res.json({ status: 'ok', refinement });
   } catch (error) {
     console.error('Refinement error:', error.message || error);
     res.status(500).json({ error: error.message || 'שגיאה בעדכון האבחנה. נסו שוב.' });
+  }
+});
+
+app.post('/api/analyze-followup-image', (req, res, next) => {
+  if (isRateLimited(req.ip)) {
+    return res.status(429).json({ error: 'יותר מדי בקשות. נסו שוב בעוד כמה דקות.' });
+  }
+  next();
+}, upload.single('image'), async (req, res) => {
+  try {
+    const jobId = req.body.jobId;
+    if (!jobId) {
+      return res.status(400).json({ error: 'חסר מזהה סריקה' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'לא הועלתה תמונה' });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'your_anthropic_api_key_here') {
+      return res.status(500).json({ error: 'מפתח API של Anthropic לא הוגדר' });
+    }
+
+    const job = jobs.get(jobId);
+    if (!job || job.status !== 'done') {
+      return res.status(404).json({ error: 'הניתוח המקורי לא נמצא או שפג תוקפו. נסו סריקה חדשה.' });
+    }
+
+    if (job.followUpImageDone) {
+      return res.status(400).json({ error: 'כבר הועלה צילום נוסף לסריקה זו.' });
+    }
+
+    const validation = await validateImageBuffer(req.file.buffer);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.reason });
+    }
+
+    const compressed = await compressImage(req.file.buffer, req.file.mimetype);
+    const newImageBase64 = compressed.buffer.toString('base64');
+
+    const originalAnalysis = job.result?.analysis;
+    if (!originalAnalysis) {
+      return res.status(400).json({ error: 'אין נתוני ניתוח מקוריים' });
+    }
+
+    const startTime = Date.now();
+    console.log(`[followup:${jobId}] Starting follow-up image analysis...`);
+
+    const followUpPromise = analyzeFollowUpImage(
+      originalAnalysis,
+      job.refinementResult || null,
+      null,
+      newImageBase64,
+      compressed.mimetype,
+      job.imageBase64 || null,
+      job.imageMimetype || null
+    );
+    const followUpTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Claude API timeout')), 180000)
+    );
+
+    const followUpResult = await Promise.race([followUpPromise, followUpTimeout]);
+    const duration = Date.now() - startTime;
+    console.log(`[followup:${jobId}] Done in ${duration}ms, changed: ${followUpResult.diagnosisChanged}, plantChanged: ${followUpResult.plantIdentificationChanged}`);
+
+    job.followUpImageDone = true;
+    job.created = Date.now();
+
+    res.json({ status: 'ok', followUpResult });
+  } catch (error) {
+    console.error('Follow-up image error:', error.message || error);
+    res.status(500).json({ error: error.message || 'שגיאה בניתוח הצילום הנוסף. נסו שוב.' });
   }
 });
 

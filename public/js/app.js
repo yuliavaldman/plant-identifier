@@ -83,10 +83,15 @@ document.addEventListener('DOMContentLoaded', () => {
     resetUpload();
     currentJobId = null;
     currentAnalysisData = null;
+    followUpSelectedFile = null;
     const refCard = document.getElementById('refinementCard');
     if (refCard) refCard.hidden = true;
     const refResult = document.getElementById('refinementResultCard');
     if (refResult) refResult.hidden = true;
+    const fuImgCard = document.getElementById('followUpImageCard');
+    if (fuImgCard) fuImgCard.hidden = true;
+    const fuImgResult = document.getElementById('followUpImageResultCard');
+    if (fuImgResult) fuImgResult.hidden = true;
     showSection('upload');
   }
 
@@ -278,6 +283,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const refCard = document.getElementById('refinementResultCard');
     if (refCard) refCard.hidden = true;
+    const fuImgCard = document.getElementById('followUpImageCard');
+    if (fuImgCard) fuImgCard.hidden = true;
+    const fuImgResult = document.getElementById('followUpImageResultCard');
+    if (fuImgResult) fuImgResult.hidden = true;
 
     renderImageQuality(analysis);
     renderIdentification(analysis);
@@ -286,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderHealth(analysis);
     renderIssues(analysis);
     renderFollowUpQuestions(analysis, !!data.canRefine);
+    renderFollowUpImageUpload(analysis, !!data.canFollowUpImage);
     renderCare(analysis);
     renderToxicity(analysis);
     renderSeasonal(analysis);
@@ -751,6 +761,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (data.refinement) {
         renderRefinementResult(data.refinement);
         if (btn) btn.remove();
+        if (data.refinement.needsMorePhotos && data.refinement.suggestedPhotos?.length > 0) {
+          showFollowUpImageUpload(data.refinement.suggestedPhotos);
+        }
       }
     } catch (error) {
       alert(error.message);
@@ -826,6 +839,259 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.getElementById('refinementResultBody').innerHTML = html;
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderFollowUpImageUpload(analysis, canFollowUpImage) {
+    const card = document.getElementById('followUpImageCard');
+    if (!card) return;
+
+    const needsPhotos = analysis.needsMorePhotos || (analysis.suggestedPhotos && analysis.suggestedPhotos.length > 0);
+    if (!needsPhotos || !canFollowUpImage || !currentJobId) {
+      card.hidden = true;
+      return;
+    }
+
+    showFollowUpImageUpload(analysis.suggestedPhotos || []);
+  }
+
+  function showFollowUpImageUpload(suggestedPhotos) {
+    const card = document.getElementById('followUpImageCard');
+    if (!card || !currentJobId) return;
+
+    card.hidden = false;
+
+    let html = '<div class="followup-image-intro">העלו צילום נוסף כדי לשפר את דיוק האבחנה:</div>';
+
+    if (suggestedPhotos && suggestedPhotos.length > 0) {
+      html += '<ul class="followup-suggested-list">';
+      for (const photo of suggestedPhotos) {
+        html += `<li>📷 ${esc(photo)}</li>`;
+      }
+      html += '</ul>';
+    }
+
+    html += `<div class="followup-image-upload-area" id="followUpImageDropZone">
+      <div class="followup-upload-icon">📷</div>
+      <div class="followup-upload-text">גררו תמונה לכאן או לחצו לבחירה</div>
+      <input type="file" id="followUpFileInput" accept="image/*" hidden>
+    </div>`;
+    html += '<div id="followUpPreviewArea" hidden></div>';
+    html += '<div class="followup-image-loading" id="followUpImageLoading" hidden><span class="refine-spinner"></span> מנתח את הצילום הנוסף...</div>';
+
+    document.getElementById('followUpImageBody').innerHTML = html;
+
+    const dropZone = document.getElementById('followUpImageDropZone');
+    const fileInput = document.getElementById('followUpFileInput');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length > 0 && e.dataTransfer.files[0].type.startsWith('image/')) {
+        handleFollowUpFile(e.dataTransfer.files[0]);
+      }
+    });
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFollowUpFile(e.target.files[0]);
+      }
+    });
+  }
+
+  let followUpSelectedFile = null;
+
+  function handleFollowUpFile(file) {
+    if (!file.type.startsWith('image/')) {
+      alert('סוג קובץ לא נתמך. יש להעלות תמונה.');
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      alert('קובץ גדול מדי. גודל מרבי 15MB.');
+      return;
+    }
+
+    followUpSelectedFile = file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const previewArea = document.getElementById('followUpPreviewArea');
+      const dropZone = document.getElementById('followUpImageDropZone');
+      if (dropZone) dropZone.hidden = true;
+
+      previewArea.hidden = false;
+      previewArea.innerHTML = `
+        <div class="followup-preview"><img src="${e.target.result}" alt="צילום נוסף"></div>
+        <div class="followup-preview-actions">
+          <button class="btn btn-primary followup-submit-btn" id="followUpSubmitBtn">🔎 נתח צילום נוסף</button>
+          <button class="btn btn-text followup-clear-btn" id="followUpClearBtn">נקה</button>
+        </div>`;
+
+      document.getElementById('followUpSubmitBtn').addEventListener('click', submitFollowUpImage);
+      document.getElementById('followUpClearBtn').addEventListener('click', clearFollowUpImage);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearFollowUpImage() {
+    followUpSelectedFile = null;
+    const previewArea = document.getElementById('followUpPreviewArea');
+    if (previewArea) {
+      previewArea.hidden = true;
+      previewArea.innerHTML = '';
+    }
+    const dropZone = document.getElementById('followUpImageDropZone');
+    if (dropZone) dropZone.hidden = false;
+    const fileInput = document.getElementById('followUpFileInput');
+    if (fileInput) fileInput.value = '';
+  }
+
+  async function submitFollowUpImage() {
+    if (!followUpSelectedFile || !currentJobId) return;
+
+    const submitBtn = document.getElementById('followUpSubmitBtn');
+    const clearBtn = document.getElementById('followUpClearBtn');
+    const loading = document.getElementById('followUpImageLoading');
+
+    if (submitBtn) submitBtn.hidden = true;
+    if (clearBtn) clearBtn.hidden = true;
+    if (loading) loading.hidden = false;
+
+    try {
+      const formData = new FormData();
+      formData.append('image', followUpSelectedFile);
+      formData.append('jobId', currentJobId);
+
+      const res = await fetch('/api/analyze-followup-image', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'שגיאה בניתוח הצילום הנוסף');
+      }
+
+      if (data.followUpResult) {
+        renderFollowUpImageResult(data.followUpResult);
+        const card = document.getElementById('followUpImageCard');
+        if (card) card.hidden = true;
+      }
+    } catch (error) {
+      alert(error.message);
+      if (submitBtn) submitBtn.hidden = false;
+      if (clearBtn) clearBtn.hidden = false;
+    }
+
+    if (loading) loading.hidden = true;
+  }
+
+  function renderFollowUpImageResult(result) {
+    const card = document.getElementById('followUpImageResultCard');
+    if (!card) return;
+
+    card.hidden = false;
+    let html = '';
+
+    if (result.followUpSummary) {
+      html += `<div class="followup-result-summary">${esc(result.followUpSummary)}</div>`;
+    }
+
+    if (result.newObservations && result.newObservations.length > 0) {
+      html += '<div class="followup-new-observations"><h4>תצפיות חדשות מהצילום:</h4><ul>';
+      for (const obs of result.newObservations) {
+        html += `<li>${esc(obs)}</li>`;
+      }
+      html += '</ul></div>';
+    }
+
+    const changeLabels = { increased: 'עלתה', unchanged: 'ללא שינוי', decreased: 'ירדה' };
+    const changeIcons = { increased: '📈', unchanged: '➡️', decreased: '📉' };
+    if (result.confidenceChange) {
+      html += `<div class="followup-result-confidence">${changeIcons[result.confidenceChange] || '➡️'} רמת הוודאות ${esc(changeLabels[result.confidenceChange] || result.confidenceChange)}</div>`;
+    }
+
+    if (result.updatedReliability) {
+      html += `<div style="font-size:0.9rem;color:var(--text-light);margin-bottom:14px">${esc(result.updatedReliability)}</div>`;
+    }
+
+    if (result.plantIdentificationChanged && result.updatedPlantIdentification) {
+      const upId = result.updatedPlantIdentification;
+      html += `<div class="followup-updated-id">
+        <h4>🔄 זיהוי הצמח עודכן:</h4>
+        <div style="font-size:1.1rem;font-weight:700;color:var(--primary-dark)">${esc(upId.commonNameHe || upId.commonNameEn || '')}</div>
+        <div style="font-style:italic;color:var(--text-light)">${esc(upId.scientificName || '')}</div>`;
+      if (upId.changeReason) {
+        html += `<div style="font-size:0.85rem;color:var(--text);margin-top:6px">${esc(upId.changeReason)}</div>`;
+      }
+      html += '</div>';
+    }
+
+    if (result.supportedIssues && result.supportedIssues.length > 0) {
+      html += '<div class="followup-issue-section"><h4>✅ בעיות שהתחזקו:</h4>';
+      for (const issue of result.supportedIssues) {
+        html += `<div class="followup-issue-item followup-issue-supported"><strong>${esc(issue.name || '')}</strong>`;
+        if (issue.explanation) html += `<div class="followup-issue-detail">${esc(issue.explanation)}</div>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (result.weakenedIssues && result.weakenedIssues.length > 0) {
+      html += '<div class="followup-issue-section"><h4>🔻 בעיות שנחלשו:</h4>';
+      for (const issue of result.weakenedIssues) {
+        html += `<div class="followup-issue-item followup-issue-weakened"><strong>${esc(issue.name || '')}</strong>`;
+        if (issue.explanation) html += `<div class="followup-issue-detail">${esc(issue.explanation)}</div>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (result.ruledOut && result.ruledOut.length > 0) {
+      html += '<div class="followup-issue-section"><h4>❌ נשללו:</h4>';
+      for (const issue of result.ruledOut) {
+        html += `<div class="followup-issue-item followup-issue-ruled-out"><strong>${esc(issue.name || '')}</strong>`;
+        if (issue.reason) html += `<div class="followup-issue-detail">${esc(issue.reason)}</div>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (result.newIssues && result.newIssues.length > 0) {
+      html += '<div class="followup-issue-section"><h4>🆕 בעיות חדשות שזוהו:</h4>';
+      for (const issue of result.newIssues) {
+        html += `<div class="followup-issue-item followup-issue-new"><strong>${esc(issue.name || '')}</strong>`;
+        if (issue.description) html += `<div class="followup-issue-detail">${esc(issue.description)}</div>`;
+        if (issue.treatment) html += `<div class="followup-issue-detail"><strong>טיפול:</strong> ${esc(issue.treatment)}</div>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (result.recommendedNextStep) {
+      html += `<div class="refinement-next-step"><h4>הצעד הבא המומלץ:</h4><p>${esc(result.recommendedNextStep)}</p></div>`;
+    }
+
+    if (result.needsMorePhotos && result.suggestedPhotos && result.suggestedPhotos.length > 0) {
+      html += '<div class="refinement-photos"><h4>📷 עדיין מומלץ להוסיף צילומים:</h4><ul>';
+      for (const photo of result.suggestedPhotos) {
+        html += `<li>${esc(photo)}</li>`;
+      }
+      html += '</ul></div>';
+    }
+
+    document.getElementById('followUpImageResultBody').innerHTML = html;
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
