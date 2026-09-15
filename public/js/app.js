@@ -132,7 +132,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const steps = ['step1', 'step2', 'step3', 'step4'];
     const stepLabels = ['מזהה את הצמח', 'בודק מחלות ומזיקים', 'מנתח תנאי גידול', 'מכין המלצות טיפול'];
+    const waitingMessages = [
+      'מעמיק בניתוח...',
+      'בודק מאגרי מידע בוטניים...',
+      'משווה דגימות דומות...',
+      'מרכיב תוצאות מפורטות...',
+      'כמעט שם...',
+      'מסיים את העיבוד...'
+    ];
     let currentStep = 0;
+    let waitingIdx = 0;
+    let elapsedSeconds = 0;
+
+    // Live timer
+    const timerEl = document.getElementById('loadingTimer');
+    if (timerEl) timerEl.textContent = '';
+    const timerInterval = setInterval(() => {
+      elapsedSeconds++;
+      if (timerEl) timerEl.textContent = elapsedSeconds + ' שניות';
+    }, 1000);
 
     const stepInterval = setInterval(() => {
       if (currentStep > 0 && currentStep <= steps.length) {
@@ -145,9 +163,10 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById(steps[currentStep]).classList.add('active');
         currentStep++;
       } else {
-        document.getElementById('loadingText').textContent = 'עדיין מעבד... זה יכול לקחת עד 30 שניות';
+        document.getElementById('loadingText').textContent = waitingMessages[waitingIdx % waitingMessages.length];
+        waitingIdx++;
       }
-    }, 5000);
+    }, 4000);
 
     try {
       const formData = new FormData();
@@ -159,6 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       clearInterval(stepInterval);
+      clearInterval(timerInterval);
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
@@ -181,6 +201,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showSection('results');
     } catch (error) {
       clearInterval(stepInterval);
+      clearInterval(timerInterval);
       showError('שגיאה', error.message);
     }
 

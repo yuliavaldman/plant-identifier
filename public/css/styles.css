@@ -228,6 +228,7 @@ body {
   position: relative;
   width: 60px;
   height: 100px;
+  animation: plantPulse 2s ease-in-out infinite;
 }
 
 .stem {
@@ -289,7 +290,20 @@ body {
 
 .loading-sub {
   color: var(--text-light);
-  margin-bottom: 24px;
+  margin-bottom: 8px;
+}
+
+.loading-timer {
+  color: var(--primary);
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+  min-height: 1.4em;
+}
+
+@keyframes plantPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
 }
 
 .loading-steps {
