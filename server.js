@@ -68,8 +68,11 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     // Return job ID immediately (within 1-2 seconds)
     res.json({ jobId });
 
-    // Process in background
-    processImage(jobId, req.file.buffer, req.file.mimetype);
+    // Process in background (with safety catch)
+    processImage(jobId, req.file.buffer, req.file.mimetype).catch(err => {
+      console.error('Unhandled processing error:', err);
+      jobs.set(jobId, { status: 'error', error: 'שגיאה לא צפויה. נסו שוב.', created: Date.now() });
+    });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'שגיאה בהעלאת התמונה' });
@@ -78,10 +81,18 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
 async function processImage(jobId, fileBuffer, fileMimetype) {
   try {
+    console.log(`[${jobId}] Starting image processing...`);
     const compressed = await compressImage(fileBuffer, fileMimetype);
+    console.log(`[${jobId}] Image compressed to ${Math.round(compressed.buffer.length / 1024)}KB`);
     const imageBase64 = compressed.buffer.toString('base64');
 
-    const tasks = [analyzeWithClaude(imageBase64, compressed.mimetype)];
+    // Claude API call with 60s timeout
+    const claudePromise = analyzeWithClaude(imageBase64, compressed.mimetype);
+    const claudeTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Claude API timeout (60s)')), 60000)
+    );
+
+    const tasks = [Promise.race([claudePromise, claudeTimeout])];
 
     if (process.env.PLANTNET_API_KEY && process.env.PLANTNET_API_KEY !== 'your_plantnet_api_key_here') {
       tasks.push(identifyWithPlantNet(compressed.buffer));
@@ -89,16 +100,20 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
       tasks.push(Promise.resolve(null));
     }
 
+    console.log(`[${jobId}] Calling Claude API...`);
     const [claudeResult, plantNetResult] = await Promise.allSettled(tasks);
+    console.log(`[${jobId}] Claude: ${claudeResult.status}, PlantNet: ${plantNetResult.status}`);
 
     const claude = claudeResult.status === 'fulfilled' ? claudeResult.value : null;
     const plantNet = plantNetResult.status === 'fulfilled' ? plantNetResult.value : null;
 
     if (!claude) {
       const errMsg = claudeResult.reason?.message || 'שגיאה בניתוח התמונה';
+      console.error(`[${jobId}] Claude failed:`, errMsg);
       jobs.set(jobId, { status: 'error', error: errMsg, created: Date.now() });
       return;
     }
+    console.log(`[${jobId}] Claude identified: ${claude?.identification?.scientificName}`);
 
     // Wikipedia verification (non-blocking, with timeout)
     const sciName = claude?.identification?.scientificName;
@@ -130,8 +145,9 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
         timestamp: new Date().toISOString()
       }
     });
+    console.log(`[${jobId}] Done!`);
   } catch (error) {
-    console.error('Processing error:', error);
+    console.error(`[${jobId}] Processing error:`, error.message || error);
     jobs.set(jobId, { status: 'error', error: 'שגיאה בניתוח התמונה. נסו שוב.', created: Date.now() });
   }
 }

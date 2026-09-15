@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Step 2: Poll for results every 3 seconds
       const data = await new Promise((resolve, reject) => {
         let attempts = 0;
-        const maxAttempts = 40; // 40 * 3s = 2 minutes max
+        const maxAttempts = 60; // 60 * 3s = 3 minutes max
 
         const poll = setInterval(async () => {
           attempts++;
