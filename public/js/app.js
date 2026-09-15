@@ -13,6 +13,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const retryBtn = document.getElementById('retryBtn');
 
   let selectedFile = null;
+  let currentJobId = null;
+  let currentAnalysisData = null;
 
   // Drag and drop
   uploadArea.addEventListener('dragover', (e) => {
@@ -79,6 +81,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function resetToUpload() {
     resetUpload();
+    currentJobId = null;
+    currentAnalysisData = null;
+    const refCard = document.getElementById('refinementCard');
+    if (refCard) refCard.hidden = true;
+    const refResult = document.getElementById('refinementResultCard');
+    if (refResult) refResult.hidden = true;
     showSection('upload');
   }
 
@@ -248,6 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      currentJobId = data.jobId || null;
+      currentAnalysisData = data;
       renderResults(data);
       saveToHistory(data);
       showSection('results');
@@ -266,13 +276,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const analysis = data.analysis;
     if (!analysis) return;
 
+    const refCard = document.getElementById('refinementResultCard');
+    if (refCard) refCard.hidden = true;
+
     renderImageQuality(analysis);
     renderIdentification(analysis);
     renderObservations(analysis);
     renderCrossReference(data.crossReference);
     renderHealth(analysis);
     renderIssues(analysis);
-    renderFollowUpQuestions(analysis);
+    renderFollowUpQuestions(analysis, !!data.canRefine);
     renderCare(analysis);
     renderToxicity(analysis);
     renderSeasonal(analysis);
@@ -622,7 +635,7 @@ document.addEventListener('DOMContentLoaded', () => {
     body.innerHTML = html;
   }
 
-  function renderFollowUpQuestions(a) {
+  function renderFollowUpQuestions(a, canRefine) {
     const card = document.getElementById('followUpCard');
     if (!card) return;
 
@@ -633,12 +646,187 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     card.hidden = false;
-    let html = '<div class="follow-up-intro">שאלות אלו יעזרו לשפר את דיוק האבחון:</div><ul class="follow-up-list">';
-    for (const q of questions) {
-      html += `<li>❓ ${esc(q)}</li>`;
+    const structured = normalizeFollowUpQuestions(questions);
+
+    let html = '<div class="follow-up-intro">ענו על השאלות הבאות כדי לשפר את דיוק האבחון:</div>';
+    html += '<div class="follow-up-form" id="followUpForm">';
+
+    for (const q of structured) {
+      html += `<div class="follow-up-question" data-qid="${esc(q.id)}">`;
+      html += `<label class="follow-up-label">${esc(q.question)}</label>`;
+
+      if (q.type === 'yes_no') {
+        html += `<div class="follow-up-options">
+          <label class="radio-option"><input type="radio" name="${esc(q.id)}" value="כן"><span>כן</span></label>
+          <label class="radio-option"><input type="radio" name="${esc(q.id)}" value="לא"><span>לא</span></label>
+          <label class="radio-option"><input type="radio" name="${esc(q.id)}" value="לא יודע/ת"><span>לא יודע/ת</span></label>
+        </div>`;
+      } else if (q.type === 'single_choice' && q.options && q.options.length > 0) {
+        html += '<div class="follow-up-options">';
+        for (const opt of q.options) {
+          html += `<label class="radio-option"><input type="radio" name="${esc(q.id)}" value="${esc(opt)}"><span>${esc(opt)}</span></label>`;
+        }
+        html += '</div>';
+      } else {
+        html += `<input type="text" class="follow-up-text-input" name="${esc(q.id)}" placeholder="הקלידו תשובה..." />`;
+      }
+
+      html += '</div>';
     }
-    html += '</ul>';
+
+    html += '</div>';
+
+    if (canRefine && currentJobId) {
+      html += `<button class="btn btn-primary refine-btn" id="refineBtn">🔬 עדכן אבחנה</button>`;
+      html += `<div class="refine-loading" id="refineLoading" hidden><span class="refine-spinner"></span> מעדכן את האבחנה...</div>`;
+    }
+
     document.getElementById('followUpBody').innerHTML = html;
+
+    const refineBtn = document.getElementById('refineBtn');
+    if (refineBtn) {
+      refineBtn.addEventListener('click', submitRefinement);
+    }
+  }
+
+  function normalizeFollowUpQuestions(questions) {
+    return questions.map((q, i) => {
+      if (typeof q === 'string') {
+        return { id: 'q' + (i + 1), question: q, type: 'short_text', options: [] };
+      }
+      return {
+        id: q.id || 'q' + (i + 1),
+        question: q.question || '',
+        type: q.type || 'short_text',
+        options: q.options || []
+      };
+    });
+  }
+
+  async function submitRefinement() {
+    const form = document.getElementById('followUpForm');
+    const btn = document.getElementById('refineBtn');
+    const loading = document.getElementById('refineLoading');
+    if (!form || !currentJobId) return;
+
+    const questions = normalizeFollowUpQuestions(currentAnalysisData?.analysis?.followUpQuestions || []);
+    const answers = [];
+
+    for (const q of questions) {
+      let answer = null;
+      if (q.type === 'yes_no' || q.type === 'single_choice') {
+        const checked = form.querySelector(`input[name="${q.id}"]:checked`);
+        if (checked) answer = checked.value;
+      } else {
+        const input = form.querySelector(`input[name="${q.id}"]`);
+        if (input && input.value.trim()) answer = input.value.trim();
+      }
+
+      if (answer) {
+        answers.push({ questionId: q.id, question: q.question, answer });
+      }
+    }
+
+    if (answers.length === 0) {
+      alert('יש לענות על לפחות שאלה אחת');
+      return;
+    }
+
+    if (btn) btn.hidden = true;
+    if (loading) loading.hidden = false;
+
+    try {
+      const res = await fetch('/api/refine-diagnosis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: currentJobId, answers })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'שגיאה בעדכון האבחנה');
+      }
+
+      if (data.refinement) {
+        renderRefinementResult(data.refinement);
+        if (btn) btn.remove();
+      }
+    } catch (error) {
+      alert(error.message);
+      if (btn) btn.hidden = false;
+    }
+
+    if (loading) loading.hidden = true;
+  }
+
+  function renderRefinementResult(ref) {
+    const card = document.getElementById('refinementResultCard');
+    if (!card) return;
+
+    card.hidden = false;
+
+    let html = '';
+
+    if (ref.refinementSummary) {
+      html += `<div class="refinement-summary">${esc(ref.refinementSummary)}</div>`;
+    }
+
+    const changeLabels = { increased: 'עלתה', unchanged: 'ללא שינוי', decreased: 'ירדה' };
+    const changeIcons = { increased: '📈', unchanged: '➡️', decreased: '📉' };
+    if (ref.confidenceChange) {
+      html += `<div class="refinement-confidence">${changeIcons[ref.confidenceChange] || '➡️'} רמת הוודאות ${esc(changeLabels[ref.confidenceChange] || ref.confidenceChange)}</div>`;
+    }
+
+    if (ref.updatedIssues && ref.updatedIssues.length > 0) {
+      html += '<div class="refinement-section"><h4>בעיות מעודכנות:</h4>';
+      const statusLabels = { confirmed: 'אושר — סביר יותר', unchanged: 'ללא שינוי', less_likely: 'פחות סביר', ruled_out: 'נשלל' };
+      const statusIcons = { confirmed: '✅', unchanged: '➡️', less_likely: '🔻', ruled_out: '❌' };
+      for (const issue of ref.updatedIssues) {
+        const st = issue.status || 'unchanged';
+        html += `<div class="refinement-issue refinement-issue-${esc(st)}">
+          <div class="refinement-issue-header">${statusIcons[st] || '➡️'} <strong>${esc(issue.name || '')}</strong> — ${esc(statusLabels[st] || st)}</div>`;
+        if (issue.explanation) {
+          html += `<div class="refinement-issue-detail">${esc(issue.explanation)}</div>`;
+        }
+        if (issue.treatment) {
+          html += `<div class="refinement-issue-detail"><strong>טיפול:</strong> ${esc(issue.treatment)}</div>`;
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (ref.ruledOut && ref.ruledOut.length > 0) {
+      html += '<div class="refinement-section"><h4>נשללו:</h4>';
+      for (const item of ref.ruledOut) {
+        html += `<div class="refinement-ruled-out">❌ <strong>${esc(item.name || '')}</strong> — ${esc(item.reason || '')}</div>`;
+      }
+      html += '</div>';
+    }
+
+    if (ref.stillUncertain && ref.stillUncertain.length > 0) {
+      html += '<div class="refinement-section"><h4>עדיין לא ברור:</h4>';
+      for (const item of ref.stillUncertain) {
+        html += `<div class="refinement-uncertain">❓ <strong>${esc(item.name || '')}</strong> — ${esc(item.reason || '')}</div>`;
+      }
+      html += '</div>';
+    }
+
+    if (ref.recommendedNextStep) {
+      html += `<div class="refinement-next-step"><h4>הצעד הבא המומלץ:</h4><p>${esc(ref.recommendedNextStep)}</p></div>`;
+    }
+
+    if (ref.needsMorePhotos && ref.suggestedPhotos && ref.suggestedPhotos.length > 0) {
+      html += '<div class="refinement-photos"><h4>📷 כדי לשפר עוד את האבחון, מומלץ להעלות צילום נוסף:</h4><ul>';
+      for (const photo of ref.suggestedPhotos) {
+        html += `<li>${esc(photo)}</li>`;
+      }
+      html += '</ul></div>';
+    }
+
+    document.getElementById('refinementResultBody').innerHTML = html;
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   function renderCare(a) {

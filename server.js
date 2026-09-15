@@ -3,7 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const sharp = require('sharp');
-const { analyzeWithClaude } = require('./services/claude-vision');
+const { analyzeWithClaude, refineWithClaude } = require('./services/claude-vision');
 const { identifyWithPlantNet } = require('./services/plantnet');
 const { verifyWithWikipedia } = require('./services/wiki-verify');
 
@@ -227,6 +227,8 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
     jobs.set(jobId, {
       status: 'done',
       created: Date.now(),
+      imageBase64,
+      imageMimetype: compressed.mimetype,
       result: {
         analysis: claude,
         plantNet,
@@ -321,8 +323,8 @@ app.get('/api/result/:jobId', (req, res) => {
     return res.json({ status: 'error', error: job.error });
   }
   const result = job.result;
-  jobs.delete(req.params.jobId);
-  res.json({ status: 'done', ...result });
+  const hasFollowUp = Array.isArray(result.analysis?.followUpQuestions) && result.analysis.followUpQuestions.length > 0;
+  res.json({ status: 'done', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, ...result });
 });
 
 function confidenceLevelText(conf) {
@@ -496,6 +498,70 @@ function applyToxicityVerification(claude, crossReference) {
   }
   // If verified and confidence is high with no disagreement, keep "verified"
 }
+
+app.post('/api/refine-diagnosis', async (req, res) => {
+  try {
+    if (isRateLimited(req.ip)) {
+      return res.status(429).json({ error: 'יותר מדי בקשות. נסו שוב בעוד כמה דקות.' });
+    }
+
+    const { jobId, answers } = req.body;
+    if (!jobId || !answers || !Array.isArray(answers)) {
+      return res.status(400).json({ error: 'נתונים חסרים לעדכון האבחנה' });
+    }
+
+    if (answers.length === 0) {
+      return res.status(400).json({ error: 'לא נשלחו תשובות' });
+    }
+
+    if (answers.length > 4) {
+      return res.status(400).json({ error: 'מספר תשובות חורג מהמותר' });
+    }
+
+    const job = jobs.get(jobId);
+    if (!job || job.status !== 'done') {
+      return res.status(404).json({ error: 'הניתוח המקורי לא נמצא או שפג תוקפו. נסו סריקה חדשה.' });
+    }
+
+    if (job.refined) {
+      return res.status(400).json({ error: 'כבר בוצע עדכון אבחנה לסריקה זו.' });
+    }
+
+    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'your_anthropic_api_key_here') {
+      return res.status(500).json({ error: 'מפתח API של Anthropic לא הוגדר' });
+    }
+
+    const originalAnalysis = job.result?.analysis;
+    if (!originalAnalysis) {
+      return res.status(400).json({ error: 'אין נתוני ניתוח מקוריים' });
+    }
+
+    const startTime = Date.now();
+    console.log(`[refine:${jobId}] Starting refinement with ${answers.length} answers`);
+
+    const refinePromise = refineWithClaude(
+      originalAnalysis,
+      answers,
+      job.imageBase64 || null,
+      job.imageMimetype || null
+    );
+    const refineTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Claude API timeout')), 180000)
+    );
+
+    const refinement = await Promise.race([refinePromise, refineTimeout]);
+    const duration = Date.now() - startTime;
+    console.log(`[refine:${jobId}] Done in ${duration}ms, changed: ${refinement.diagnosisChanged}`);
+
+    job.refined = true;
+    job.created = Date.now();
+
+    res.json({ status: 'ok', refinement });
+  } catch (error) {
+    console.error('Refinement error:', error.message || error);
+    res.status(500).json({ error: error.message || 'שגיאה בעדכון האבחנה. נסו שוב.' });
+  }
+});
 
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {

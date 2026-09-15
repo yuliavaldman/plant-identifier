@@ -48,8 +48,15 @@ TOXICITY:
 - If identification confidence < 0.7, toxicity verification MUST be "uncertain" or "unknown".
 - NEVER present "not toxic" with certainty based solely on image analysis.
 
-FOLLOW-UP:
-When you cannot reliably differentiate between diagnoses, include "followUpQuestions" at top level with practical Hebrew questions the user could answer.
+FOLLOW-UP QUESTIONS:
+When you cannot reliably differentiate between diagnoses, include "followUpQuestions" at top level.
+Each question MUST be a structured object:
+{"id":"q1","question":"שאלה בעברית","type":"yes_no|single_choice|short_text","options":["only for single_choice"]}
+Rules:
+- Maximum 4 questions per analysis.
+- Each question must be able to CHANGE the diagnosis outcome. Do not include general questions that won't affect the decision.
+- Types: "yes_no" (binary), "single_choice" (2-5 Hebrew options, always include "לא יודע/ת" as last option), "short_text" (open, when categories don't fit).
+- If no questions would meaningfully change the diagnosis: followUpQuestions: []
 
 CONTEXT:
 Common Israeli/Mediterranean plants: Bougainvillea, Plumbago, Lantana, Jasmine, Ficus, Citrus, Olive, Rosemary, Geranium — check these first. But do not assume the user is in Israel; give general care advice when location is unknown.
@@ -75,7 +82,7 @@ JSON for "success":
     "alternativeExplanations": ["..."], "questionsToConfirm": ["..."],
     "recommendedNextStep": "...", "treatment": "..."
   }],
-  "followUpQuestions": ["שאלה 1"],
+  "followUpQuestions": [{"id":"q1","question":"שאלה בעברית","type":"yes_no|single_choice|short_text","options":[]}],
   "careRecommendations": {"water":"..","light":"..","soil":"..","temperature":"..","fertilizer":"..","pruning":".."},
   "toxicity": {"verification":"verified|uncertain|unknown","forPets":{"toxic":false,"details":".."},"forHumans":{"toxic":false,"details":".."}},
   "seasonalCare": {"spring":"..","summer":"..","autumn":"..","winter":".."},
@@ -143,4 +150,114 @@ async function analyzeWithClaude(imageBase64, mimetype) {
   }
 }
 
-module.exports = { analyzeWithClaude };
+const REFINEMENT_PROMPT_PREFIX = `You are refining a previous plant diagnosis based on user answers to follow-up questions.
+Return ONLY valid JSON (no markdown fences). All text in Hebrew.
+
+RULES:
+- Do NOT restart analysis from scratch. Build on the previous diagnosis.
+- For each previously identified issue, determine if the user's answers make it: more likely, unchanged, less likely, or ruled out.
+- Do not claim certainty when evidence is still incomplete.
+- If the user answered "לא יודע/ת" or left a question unanswered, treat it as unknown — do not infer an answer.
+- If answers contradict the original diagnosis significantly, explain what changed and why.
+`;
+
+const REFINEMENT_PROMPT_WITH_IMAGE = REFINEMENT_PROMPT_PREFIX + `
+You have access to both the original image and the previous analysis. Use the image to verify any new conclusions.
+`;
+
+const REFINEMENT_PROMPT_WITHOUT_IMAGE = REFINEMENT_PROMPT_PREFIX + `
+IMPORTANT: You do NOT have the original image. This refinement is based ONLY on previous observations and the user's answers. Do not describe or reference image features you cannot see. State explicitly that the refinement is based on prior observations and user responses.
+`;
+
+const REFINEMENT_JSON_SCHEMA = `
+Return JSON:
+{
+  "refinementSummary": "Hebrew paragraph explaining what changed and why",
+  "diagnosisChanged": true|false,
+  "confidenceChange": "increased|unchanged|decreased",
+  "updatedIssues": [{"name":"...","category":"...","likelihood":"high|medium|low","severity":"...","status":"confirmed|unchanged|less_likely|ruled_out","explanation":"why this changed","treatment":"updated treatment if needed"}],
+  "ruledOut": [{"name":"...","reason":"Hebrew explanation of why ruled out"}],
+  "stillUncertain": [{"name":"...","reason":"what's still missing"}],
+  "recommendedNextStep": "Hebrew text",
+  "needsMorePhotos": true|false,
+  "suggestedPhotos": ["if needsMorePhotos is true"]
+}`;
+
+async function refineWithClaude(originalAnalysis, answers, imageBase64, imageMimetype) {
+  const hasImage = !!imageBase64;
+  const basePrompt = hasImage ? REFINEMENT_PROMPT_WITH_IMAGE : REFINEMENT_PROMPT_WITHOUT_IMAGE;
+
+  const contextBlock = `
+PREVIOUS PLANT IDENTIFICATION:
+${JSON.stringify(originalAnalysis.identification || {}, null, 2)}
+
+PREVIOUS OBSERVATIONS:
+${JSON.stringify(originalAnalysis.observations || [], null, 2)}
+
+PREVIOUS ISSUES:
+${JSON.stringify(originalAnalysis.issues || [], null, 2)}
+
+PREVIOUS HEALTH ASSESSMENT:
+${JSON.stringify(originalAnalysis.healthAssessment || {}, null, 2)}
+
+USER ANSWERS TO FOLLOW-UP QUESTIONS:
+${JSON.stringify(answers, null, 2)}
+
+${REFINEMENT_JSON_SCHEMA}`;
+
+  const messages = [{
+    role: 'user',
+    content: []
+  }];
+
+  if (hasImage) {
+    const mediaType = imageMimetype === 'image/png' ? 'image/png'
+      : imageMimetype === 'image/webp' ? 'image/webp'
+      : imageMimetype === 'image/gif' ? 'image/gif'
+      : 'image/jpeg';
+
+    messages[0].content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType, data: imageBase64 }
+    });
+  }
+
+  messages[0].content.push({
+    type: 'text',
+    text: basePrompt + contextBlock
+  });
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4000,
+    messages
+  });
+
+  const textBlock = response.content.find(b => b.type === 'text');
+  if (!textBlock) {
+    throw new Error('לא התקבלה תשובה מהמודל');
+  }
+
+  const text = textBlock.text.trim();
+  let jsonStr = text;
+
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    jsonStr = fenceMatch[1].trim();
+  } else {
+    const braceStart = text.indexOf('{');
+    const braceEnd = text.lastIndexOf('}');
+    if (braceStart !== -1 && braceEnd > braceStart) {
+      jsonStr = text.substring(braceStart, braceEnd + 1);
+    }
+  }
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error('Failed to parse refinement response (first 500 chars):', text.substring(0, 500));
+    throw new Error('שגיאה בפענוח תשובת העדכון. נסו שוב.');
+  }
+}
+
+module.exports = { analyzeWithClaude, refineWithClaude };

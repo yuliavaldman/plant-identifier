@@ -1155,6 +1155,216 @@ body {
   padding: 4px 0;
 }
 
+/* Follow-up interactive form */
+.follow-up-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 10px;
+}
+
+.follow-up-question {
+  padding: 14px 16px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(45, 106, 79, 0.08);
+}
+
+.follow-up-label {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.follow-up-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.radio-option:hover {
+  border-color: var(--primary-light);
+}
+
+.radio-option input[type="radio"] {
+  accent-color: var(--primary);
+}
+
+.radio-option input[type="radio"]:checked + span {
+  color: var(--primary-dark);
+  font-weight: 600;
+}
+
+.follow-up-text-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-family: inherit;
+  background: var(--bg-card);
+  color: var(--text);
+  direction: rtl;
+}
+
+.follow-up-text-input:focus {
+  outline: none;
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px rgba(82, 183, 136, 0.15);
+}
+
+.refine-btn {
+  margin-top: 14px;
+  width: 100%;
+  font-size: 1rem;
+  padding: 12px 20px;
+}
+
+.refine-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  color: var(--text-light);
+  font-size: 0.92rem;
+}
+
+.refine-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Refinement result card */
+.refinement-result-card {
+  border: 2px solid var(--primary-light);
+  background: linear-gradient(135deg, rgba(82, 183, 136, 0.04) 0%, rgba(45, 106, 79, 0.06) 100%);
+}
+
+.refinement-summary {
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--text);
+  padding: 12px 16px;
+  background: rgba(45, 106, 79, 0.04);
+  border-radius: var(--radius-sm);
+  border-right: 3px solid var(--primary);
+  margin-bottom: 14px;
+}
+
+.refinement-confidence {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 14px;
+  color: var(--primary-dark);
+}
+
+.refinement-section {
+  margin-bottom: 14px;
+}
+
+.refinement-section h4 {
+  font-size: 0.9rem;
+  color: var(--primary-dark);
+  margin-bottom: 8px;
+}
+
+.refinement-issue {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.refinement-issue-confirmed { border-right: 3px solid var(--success); }
+.refinement-issue-unchanged { border-right: 3px solid var(--text-muted); }
+.refinement-issue-less_likely { border-right: 3px solid var(--warning); }
+.refinement-issue-ruled_out { border-right: 3px solid var(--danger); opacity: 0.7; }
+
+.refinement-issue-header {
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+.refinement-issue-detail {
+  font-size: 0.85rem;
+  color: var(--text-light);
+  margin-top: 4px;
+}
+
+.refinement-ruled-out,
+.refinement-uncertain {
+  font-size: 0.9rem;
+  padding: 6px 0;
+}
+
+.refinement-next-step {
+  padding: 12px 16px;
+  background: rgba(45, 106, 79, 0.04);
+  border-radius: var(--radius-sm);
+  margin-top: 10px;
+}
+
+.refinement-next-step h4 {
+  font-size: 0.9rem;
+  color: var(--primary-dark);
+  margin-bottom: 6px;
+}
+
+.refinement-next-step p {
+  font-size: 0.9rem;
+}
+
+.refinement-photos {
+  padding: 12px 16px;
+  background: rgba(21, 101, 192, 0.04);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(21, 101, 192, 0.12);
+  margin-top: 10px;
+}
+
+.refinement-photos h4 {
+  font-size: 0.9rem;
+  color: var(--info);
+  margin-bottom: 8px;
+}
+
+.refinement-photos ul {
+  list-style: none;
+  padding: 0;
+}
+
+.refinement-photos li {
+  font-size: 0.88rem;
+  padding: 4px 0;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
   .app-header {

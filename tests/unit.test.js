@@ -299,6 +299,117 @@ test('imageQuality issues are valid enums', () => {
   assert.strictEqual(validIssues.length, 7);
 });
 
+// ==================== PHASE 3: FOLLOW-UP QUESTIONS STRUCTURE ====================
+
+console.log('\n=== Follow-Up Questions Structure ===');
+
+const structuredQuestion = {
+  id: 'q1',
+  question: 'האם הציפוי הלבן יורד בניגוב?',
+  type: 'yes_no',
+  options: []
+};
+
+test('structured followUpQuestion has required fields', () => {
+  assert.ok(structuredQuestion.id);
+  assert.ok(structuredQuestion.question);
+  assert.ok(['yes_no', 'single_choice', 'short_text'].includes(structuredQuestion.type));
+  assert.ok(Array.isArray(structuredQuestion.options));
+});
+
+test('single_choice question has options with לא יודע/ת', () => {
+  const scQuestion = {
+    id: 'q2',
+    question: 'היכן הופיעו הסימנים קודם?',
+    type: 'single_choice',
+    options: ['עלים ישנים', 'עלים חדשים', 'בכל הצמח', 'לא יודע/ת']
+  };
+  assert.strictEqual(scQuestion.type, 'single_choice');
+  assert.ok(scQuestion.options.length >= 2);
+  assert.ok(scQuestion.options.includes('לא יודע/ת'));
+});
+
+test('string followUpQuestion normalizes to short_text', () => {
+  const raw = 'שאלה ישנה בפורמט טקסט';
+  const normalized = typeof raw === 'string'
+    ? { id: 'q1', question: raw, type: 'short_text', options: [] }
+    : raw;
+  assert.strictEqual(normalized.type, 'short_text');
+  assert.strictEqual(normalized.question, raw);
+});
+
+test('maximum 4 followUpQuestions allowed', () => {
+  const questions = [
+    { id: 'q1', question: 'a', type: 'yes_no', options: [] },
+    { id: 'q2', question: 'b', type: 'yes_no', options: [] },
+    { id: 'q3', question: 'c', type: 'yes_no', options: [] },
+    { id: 'q4', question: 'd', type: 'yes_no', options: [] }
+  ];
+  assert.ok(questions.length <= 4);
+});
+
+// ==================== PHASE 3: REFINEMENT STRUCTURE ====================
+
+console.log('\n=== Refinement Result Structure ===');
+
+const validRefinement = {
+  refinementSummary: 'התשובות מחזקות אבחנה של קמחון',
+  diagnosisChanged: true,
+  confidenceChange: 'increased',
+  updatedIssues: [
+    { name: 'קמחון', category: 'fungal', likelihood: 'high', severity: 'medium', status: 'confirmed', explanation: 'הציפוי לא יורד בניגוב', treatment: 'ריסוס פטרייתי' }
+  ],
+  ruledOut: [{ name: 'אבק רגיל', reason: 'הציפוי לא יורד בניגוב' }],
+  stillUncertain: [],
+  recommendedNextStep: 'רסס את הצמח בתרסיס נגד קמחון',
+  needsMorePhotos: false,
+  suggestedPhotos: []
+};
+
+test('refinement has required fields', () => {
+  assert.ok(typeof validRefinement.refinementSummary === 'string');
+  assert.ok(typeof validRefinement.diagnosisChanged === 'boolean');
+  assert.ok(['increased', 'unchanged', 'decreased'].includes(validRefinement.confidenceChange));
+  assert.ok(Array.isArray(validRefinement.updatedIssues));
+  assert.ok(Array.isArray(validRefinement.ruledOut));
+  assert.ok(Array.isArray(validRefinement.stillUncertain));
+  assert.ok(typeof validRefinement.needsMorePhotos === 'boolean');
+});
+
+test('updated issue has status field', () => {
+  const validStatuses = ['confirmed', 'unchanged', 'less_likely', 'ruled_out'];
+  for (const issue of validRefinement.updatedIssues) {
+    assert.ok(validStatuses.includes(issue.status));
+  }
+});
+
+test('refinement answer structure is valid', () => {
+  const answer = { questionId: 'q1', question: 'שאלה?', answer: 'כן' };
+  assert.ok(answer.questionId);
+  assert.ok(answer.question);
+  assert.ok(answer.answer);
+});
+
+test('partial answers allowed (unanswered = unknown)', () => {
+  const allQuestions = ['q1', 'q2', 'q3'];
+  const answers = [{ questionId: 'q1', question: 'a?', answer: 'כן' }];
+  const answeredIds = answers.map(a => a.questionId);
+  const unanswered = allQuestions.filter(id => !answeredIds.includes(id));
+  assert.strictEqual(unanswered.length, 2);
+});
+
+test('canRefine flag false when no followUpQuestions', () => {
+  const analysis = { followUpQuestions: [] };
+  const canRefine = Array.isArray(analysis.followUpQuestions) && analysis.followUpQuestions.length > 0;
+  assert.strictEqual(canRefine, false);
+});
+
+test('canRefine flag true when followUpQuestions present', () => {
+  const analysis = { followUpQuestions: [{ id: 'q1', question: 'test', type: 'yes_no', options: [] }] };
+  const canRefine = Array.isArray(analysis.followUpQuestions) && analysis.followUpQuestions.length > 0;
+  assert.strictEqual(canRefine, true);
+});
+
 // ==================== INTEGRATION TEST STUBS ====================
 
 console.log('\n=== Integration Tests (require running server + API keys) ===');
@@ -321,7 +432,14 @@ const integrationTests = [
   { id: 15, name: 'Genus agreement but species disagreement → genus match message', type: 'integration' },
   { id: 16, name: 'Malformed image buffer → 400 error with Hebrew message', type: 'integration' },
   { id: 17, name: 'Oversized image → 400 error', type: 'integration' },
-  { id: 18, name: 'Repeated API requests → 429 after limit', type: 'integration' }
+  { id: 18, name: 'Repeated API requests → 429 after limit', type: 'integration' },
+  { id: 19, name: 'followUpQuestions returned as structured objects with id/type/options', type: 'manual' },
+  { id: 20, name: 'Refinement form renders with correct input types (yes_no/single_choice/short_text)', type: 'manual' },
+  { id: 21, name: 'Partial answers accepted — unanswered questions treated as unknown', type: 'manual' },
+  { id: 22, name: 'Refinement result shows what changed and why', type: 'manual' },
+  { id: 23, name: 'Original diagnosis preserved alongside refinement', type: 'manual' },
+  { id: 24, name: 'Second refinement blocked (one per scan)', type: 'integration' },
+  { id: 25, name: 'Expired job returns 404 on refine attempt', type: 'integration' }
 ];
 
 for (const t of integrationTests) {
