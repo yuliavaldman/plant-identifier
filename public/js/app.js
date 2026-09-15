@@ -291,28 +291,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     card.hidden = false;
-    const matchIcons = { species: '✅', genus: '🔶', none: '❌' };
-    const icon = matchIcons[cr.matchLevel] || '❓';
+    const agreeingSources = (cr.sources || []).filter(s => s.agrees).length;
+    const totalSources = (cr.sources || []).length;
+    const overallIcon = agreeingSources === totalSources && totalSources > 0 ? '✅' : agreeingSources > 0 ? '🔶' : '⚠️';
 
     let html = `
       <div class="cross-ref-match">
-        <div class="match-icon">${icon}</div>
+        <div class="match-icon">${overallIcon}</div>
         <div class="match-info">
           <div class="match-status">${esc(cr.agreementMessage)}</div>
           <div class="match-detail">רמת ודאות משולבת: ${Math.round((cr.combinedConfidence || 0) * 100)}%</div>
         </div>
       </div>`;
 
-    if (cr.plantNetTopResult) {
-      const pn = cr.plantNetTopResult;
+    for (const src of (cr.sources || [])) {
+      const srcIcon = src.agrees ? '✅' : '❌';
       html += `
         <div class="cross-ref-match">
-          <div class="match-icon">🌿</div>
+          <div class="match-icon">${srcIcon}</div>
           <div class="match-info">
-            <div class="match-status">PlantNet: ${esc(pn.name || '')}</div>
+            <div class="match-status">${esc(src.name)}: ${esc(src.topResult || 'לא נמצא')}</div>
             <div class="match-detail">
-              ציון: ${Math.round((pn.score || 0) * 100)}%
-              ${pn.commonNames.length > 0 ? ' — ' + esc(pn.commonNames.join(', ')) : ''}
+              ${src.hebrewName ? 'בעברית: ' + esc(src.hebrewName) + ' — ' : ''}
+              ${src.score > 0 ? 'ציון: ' + Math.round(src.score * 100) + '%' : ''}
+              ${src.note ? '<br>' + esc(src.note) : ''}
             </div>
           </div>
         </div>`;

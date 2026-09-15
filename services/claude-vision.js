@@ -2,17 +2,28 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const client = new Anthropic();
 
-const ANALYSIS_PROMPT = `You are an expert botanist, horticulturist, and plant pathologist with decades of experience.
-Analyze this plant image thoroughly and return ONLY a valid JSON object (no markdown, no code fences, just raw JSON).
+const ANALYSIS_PROMPT = `You are an expert botanist and taxonomist with decades of field experience in plant identification.
+Your task: identify the plant in this image with maximum accuracy. Return ONLY a valid JSON object (no markdown, no code fences, just raw JSON).
 
-Important guidelines:
+IDENTIFICATION METHOD — follow these steps mentally before answering:
+1. LEAF ANALYSIS: Shape (ovate, lanceolate, palmate, pinnate?), margin (smooth, serrated, lobed?), arrangement (alternate, opposite, whorled?), texture, venation pattern
+2. STEM/BARK: Woody or herbaceous? Color, texture, branching pattern
+3. FLOWERS/FRUITS: If visible — petal count, symmetry, color, arrangement, fruit type
+4. GROWTH HABIT: Tree, shrub, vine, herb, succulent, grass?
+5. OVERALL MORPHOLOGY: Size estimation, distinctive features, habitat clues in background
+6. NARROW DOWN: Use the features above to identify family → genus → species. Consider the most common species in Israel/Mediterranean if location is ambiguous.
+
+ACCURACY RULES:
+- If you cannot identify to species level with confidence, identify to genus and say so
+- Do NOT guess a specific species if the image lacks distinguishing features — stay at genus level
+- Confidence must reflect real certainty: 0.9+ only when diagnostic features are clearly visible; 0.5-0.7 for genus-level ID; below 0.5 if truly uncertain
+- Always provide at least 2 alternative matches ranked by likelihood
+- If the plant could be one of several similar species, list all candidates with what would differentiate them
+- Common houseplants and garden plants in Israel should be identified with higher accuracy
 - If the image does NOT contain a plant, set "isPlant" to false and explain in "notPlantMessage"
-- If image quality is poor, still attempt identification but note limitations
 - Provide Hebrew AND English common names
 - Scientific names must follow binomial nomenclature
-- Be specific about diseases — don't guess without visible evidence
 - For care recommendations, consider Israeli/Mediterranean climate as default
-- Confidence should reflect actual certainty (don't inflate)
 
 Return this exact JSON structure:
 {

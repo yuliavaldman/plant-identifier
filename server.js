@@ -5,6 +5,7 @@ const path = require('path');
 const sharp = require('sharp');
 const { analyzeWithClaude } = require('./services/claude-vision');
 const { identifyWithPlantNet } = require('./services/plantnet');
+const { verifyWithWikipedia } = require('./services/wiki-verify');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -73,19 +74,31 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     const [claudeResult, plantNetResult] = await Promise.allSettled(tasks);
 
-    clearInterval(heartbeat);
-
     const claude = claudeResult.status === 'fulfilled' ? claudeResult.value : null;
     const plantNet = plantNetResult.status === 'fulfilled' ? plantNetResult.value : null;
 
     if (!claude) {
+      clearInterval(heartbeat);
       const errMsg = claudeResult.reason?.message || 'שגיאה בניתוח התמונה';
       res.write(`event: error\ndata: ${JSON.stringify({ error: errMsg })}\n\n`);
       res.end();
       return;
     }
 
-    const crossReference = buildCrossReference(claude, plantNet);
+    // Verify identification with Wikipedia/Wikidata
+    const sciName = claude?.identification?.scientificName;
+    const wikiResult = await verifyWithWikipedia(sciName).catch(() => null);
+
+    // Also verify top alternative if main ID not found in Wikipedia
+    let altWikiResult = null;
+    if (wikiResult && !wikiResult.verified && claude?.identification?.alternativeMatches?.length > 0) {
+      const altName = claude.identification.alternativeMatches[0].scientificName;
+      altWikiResult = await verifyWithWikipedia(altName).catch(() => null);
+    }
+
+    clearInterval(heartbeat);
+
+    const crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult);
 
     const result = {
       analysis: claude,
@@ -103,52 +116,90 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
   }
 });
 
-function buildCrossReference(claude, plantNet) {
-  if (!plantNet || !plantNet.results || plantNet.results.length === 0) {
-    return {
-      available: false,
-      message: 'הצלבה עם PlantNet לא זמינה',
-      confidence: claude?.identification?.confidence || null
-    };
-  }
-
+function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
   const claudeName = claude?.identification?.scientificName?.toLowerCase().trim() || '';
   const claudeGenus = claudeName.split(' ')[0];
+  const claudeConf = claude?.identification?.confidence || 0;
 
-  let bestMatch = null;
+  const sources = [];
   let matchLevel = 'none';
+  let plantNetTop = null;
 
-  for (const result of plantNet.results) {
-    const pnName = result.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
-    const pnGenus = pnName.split(' ')[0];
-
-    if (pnName === claudeName) {
-      bestMatch = result;
-      matchLevel = 'species';
-      break;
+  // PlantNet cross-reference
+  if (plantNet && plantNet.results && plantNet.results.length > 0) {
+    plantNetTop = plantNet.results[0];
+    for (const result of plantNet.results) {
+      const pnName = result.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
+      const pnGenus = pnName.split(' ')[0];
+      if (pnName === claudeName) { matchLevel = 'species'; break; }
+      if (pnGenus === claudeGenus && matchLevel === 'none') { matchLevel = 'genus'; }
     }
-    if (pnGenus === claudeGenus && !bestMatch) {
-      bestMatch = result;
-      matchLevel = 'genus';
+    sources.push({
+      name: 'PlantNet',
+      topResult: plantNetTop?.species?.scientificNameWithoutAuthor || 'לא זוהה',
+      score: plantNetTop?.score || 0,
+      agrees: matchLevel !== 'none'
+    });
+  }
+
+  // Wikipedia/Wikidata verification
+  if (wikiResult) {
+    if (wikiResult.verified) {
+      sources.push({
+        name: 'ויקיפדיה',
+        topResult: wikiResult.taxonName || wikiResult.englishName,
+        hebrewName: wikiResult.hebrewName,
+        score: 1,
+        agrees: true
+      });
+    } else if (altWikiResult?.verified) {
+      const altName = claude?.identification?.alternativeMatches?.[0];
+      sources.push({
+        name: 'ויקיפדיה',
+        topResult: altWikiResult.taxonName || altWikiResult.englishName,
+        hebrewName: altWikiResult.hebrewName,
+        score: 0.7,
+        agrees: false,
+        note: `השם "${claudeName}" לא נמצא בוויקיפדיה. ייתכן שהזיהוי החלופי "${altName?.scientificName}" מדויק יותר.`
+      });
+    } else {
+      sources.push({
+        name: 'ויקיפדיה',
+        topResult: null,
+        score: 0,
+        agrees: false,
+        note: 'השם המדעי לא נמצא בוויקיפדיה — ייתכן שהזיהוי לא מדויק'
+      });
     }
   }
 
-  const plantNetTop = plantNet.results[0];
-  const plantNetScore = plantNetTop?.score || 0;
-  const claudeConf = claude?.identification?.confidence || 0;
+  const agreeingSources = sources.filter(s => s.agrees).length;
+  const totalSources = sources.length;
 
   let combinedConfidence;
   let agreementMessage;
 
-  if (matchLevel === 'species') {
-    combinedConfidence = Math.min(1, (claudeConf + plantNetScore) / 1.5);
-    agreementMessage = 'שתי המערכות מסכימות על הזיהוי — רמת ודאות גבוהה';
-  } else if (matchLevel === 'genus') {
-    combinedConfidence = Math.min(1, (claudeConf + plantNetScore) / 2);
-    agreementMessage = 'המערכות מסכימות על הסוג (Genus) אך לא על המין המדויק';
+  if (totalSources === 0) {
+    return {
+      available: false,
+      message: 'הצלבה עם מקורות חיצוניים לא זמינה',
+      confidence: claudeConf,
+      sources: []
+    };
+  }
+
+  if (agreeingSources === totalSources && totalSources >= 2) {
+    combinedConfidence = Math.min(1, claudeConf * 1.2);
+    agreementMessage = `כל ${totalSources} המקורות מסכימים על הזיהוי — רמת ודאות גבוהה מאוד`;
+  } else if (agreeingSources === totalSources) {
+    combinedConfidence = Math.min(1, claudeConf * 1.1);
+    agreementMessage = 'הזיהוי אומת מול מקור חיצוני';
+  } else if (agreeingSources > 0) {
+    combinedConfidence = claudeConf * 0.85;
+    agreementMessage = 'חלק מהמקורות מסכימים — מומלץ לצלם מזווית נוספת לדיוק';
   } else {
-    combinedConfidence = Math.max(claudeConf, plantNetScore) * 0.7;
-    agreementMessage = 'המערכות חלוקות — מומלץ לצלם מזווית נוספת או להתייעץ עם מומחה';
+    combinedConfidence = claudeConf * 0.5;
+    agreementMessage = 'המקורות החיצוניים לא מאשרים את הזיהוי — מומלץ לבדוק שוב או להתייעץ עם מומחה';
   }
 
   return {
@@ -156,6 +207,7 @@ function buildCrossReference(claude, plantNet) {
     matchLevel,
     combinedConfidence: Math.round(combinedConfidence * 100) / 100,
     agreementMessage,
+    sources,
     plantNetTopResult: plantNetTop ? {
       name: plantNetTop.species?.scientificNameWithoutAuthor,
       commonNames: plantNetTop.species?.commonNames?.slice(0, 3) || [],
