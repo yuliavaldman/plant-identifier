@@ -49,17 +49,10 @@ document.addEventListener('DOMContentLoaded', () => {
   cameraBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    // On mobile, create a fresh input each time to ensure camera opens
-    const tempInput = document.createElement('input');
-    tempInput.type = 'file';
-    tempInput.accept = 'image/*';
-    tempInput.capture = 'environment';
-    tempInput.addEventListener('change', (ev) => {
-      if (ev.target.files.length > 0) {
-        handleFile(ev.target.files[0]);
-      }
-    });
-    tempInput.click();
+    // Use the static cameraInput which has capture="environment"
+    // Reset value so the same file can be re-selected
+    cameraInput.value = '';
+    cameraInput.click();
   });
 
   cameraInput.addEventListener('change', (e) => {
