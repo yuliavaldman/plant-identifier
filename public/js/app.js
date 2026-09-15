@@ -165,35 +165,56 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('image', selectedFile);
 
-      const response = await fetch('/api/analyze', {
+      // Step 1: Upload image and get job ID (fast response)
+      const uploadRes = await fetch('/api/analyze', {
         method: 'POST',
         body: formData
       });
 
-      clearInterval(stepInterval);
-      clearInterval(timerInterval);
-
-      const text = await response.text();
-
-      // The response is heartbeat spaces followed by a JSON line
-      const jsonStr = text.trim();
-      if (!jsonStr) throw new Error('לא התקבלה תשובה מהשרת');
-
-      let data;
-      try {
-        data = JSON.parse(jsonStr);
-      } catch(e) {
-        // Try to find JSON in the text (after heartbeat spaces)
-        const lastBrace = jsonStr.lastIndexOf('}');
-        const firstBrace = jsonStr.indexOf('{');
-        if (firstBrace !== -1 && lastBrace !== -1) {
-          data = JSON.parse(jsonStr.substring(firstBrace, lastBrace + 1));
-        } else {
-          throw new Error('שגיאה בפענוח תשובת השרת');
-        }
+      if (!uploadRes.ok) {
+        const err = await uploadRes.json().catch(() => ({}));
+        throw new Error(err.error || 'שגיאה בהעלאת התמונה');
       }
 
-      if (data.error) throw new Error(data.error);
+      const { jobId, error: uploadError } = await uploadRes.json();
+      if (uploadError) throw new Error(uploadError);
+      if (!jobId) throw new Error('שגיאה בתחילת הניתוח');
+
+      // Step 2: Poll for results every 3 seconds
+      const data = await new Promise((resolve, reject) => {
+        let attempts = 0;
+        const maxAttempts = 40; // 40 * 3s = 2 minutes max
+
+        const poll = setInterval(async () => {
+          attempts++;
+          try {
+            const pollRes = await fetch('/api/result/' + jobId);
+            const result = await pollRes.json();
+
+            if (result.status === 'done') {
+              clearInterval(poll);
+              resolve(result);
+            } else if (result.status === 'error') {
+              clearInterval(poll);
+              reject(new Error(result.error || 'שגיאה בניתוח'));
+            } else if (result.status === 'not_found') {
+              clearInterval(poll);
+              reject(new Error('הניתוח לא נמצא'));
+            } else if (attempts >= maxAttempts) {
+              clearInterval(poll);
+              reject(new Error('הניתוח לקח יותר מדי זמן. נסו שוב.'));
+            }
+          } catch(e) {
+            if (attempts >= maxAttempts) {
+              clearInterval(poll);
+              reject(e);
+            }
+          }
+        }, 3000);
+      });
+
+      clearInterval(stepInterval);
+      clearInterval(timerInterval);
 
       if (data.analysis && !data.analysis.isPlant) {
         showError(
