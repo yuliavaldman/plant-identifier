@@ -1,8 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const uploadArea = document.getElementById('uploadArea');
   const fileInput = document.getElementById('fileInput');
-  const cameraInput = document.getElementById('cameraInput');
-  const cameraBtn = document.getElementById('cameraBtn');
   const previewArea = document.getElementById('previewArea');
   const previewImage = document.getElementById('previewImage');
   const clearBtn = document.getElementById('clearBtn');
@@ -46,20 +44,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  cameraBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // Use the static cameraInput which has capture="environment"
-    // Reset value so the same file can be re-selected
-    cameraInput.value = '';
-    cameraInput.click();
-  });
-
-  cameraInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-      handleFile(e.target.files[0]);
-    }
-  });
 
   clearBtn.addEventListener('click', resetUpload);
   analyzeBtn.addEventListener('click', analyzeImage);
@@ -89,7 +73,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function resetUpload() {
     selectedFile = null;
     fileInput.value = '';
-    cameraInput.value = '';
     previewImage.src = '';
     uploadArea.hidden = false;
     previewArea.hidden = true;

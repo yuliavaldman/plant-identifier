@@ -1,4 +1,4 @@
-const CACHE_NAME = 'plantdoc-v8';
+const CACHE_NAME = 'plantdoc-v9';
 const STATIC_ASSETS = ['/', '/css/styles.css', '/js/app.js', '/manifest.json'];
 
 self.addEventListener('install', (event) => {
