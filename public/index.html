@@ -86,12 +86,26 @@
         </button>
       </div>
 
+      <div class="result-card image-quality-card" id="imageQualityCard" hidden>
+        <div class="card-header">
+          <h3>📷 איכות תמונה</h3>
+        </div>
+        <div class="card-body" id="imageQualityBody"></div>
+      </div>
+
       <div class="result-card identification-card" id="identificationCard">
         <div class="card-header">
           <h3>🌱 זיהוי הצמח</h3>
           <span class="confidence-badge" id="confidenceBadge"></span>
         </div>
         <div class="card-body" id="identificationBody"></div>
+      </div>
+
+      <div class="result-card observations-card" id="observationsCard" hidden>
+        <div class="card-header">
+          <h3>👁️ תצפיות</h3>
+        </div>
+        <div class="card-body" id="observationsBody"></div>
       </div>
 
       <div class="result-card cross-ref-card" id="crossRefCard" hidden>
@@ -114,6 +128,13 @@
           <h3>⚠️ בעיות שזוהו</h3>
         </div>
         <div class="card-body" id="issuesBody"></div>
+      </div>
+
+      <div class="result-card follow-up-card" id="followUpCard" hidden>
+        <div class="card-header">
+          <h3>❓ שאלות המשך</h3>
+        </div>
+        <div class="card-body" id="followUpBody"></div>
       </div>
 
       <div class="result-card care-card" id="careCard">
@@ -150,6 +171,7 @@
         <div class="error-icon">❌</div>
         <h3 id="errorTitle">שגיאה</h3>
         <p id="errorMessage"></p>
+        <div id="errorSuggestions" hidden></div>
         <button class="btn btn-primary" id="retryBtn">נסו שוב</button>
       </div>
     </section>

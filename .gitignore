@@ -1,2 +1,7 @@
 node_modules/
 .env
+plantdoc-audit/
+plantdoc-audit.zip
+plantdoc-phase2-review.zip
+_backup_phase1/
+*.log

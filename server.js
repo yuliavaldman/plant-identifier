@@ -10,22 +10,54 @@ const { verifyWithWikipedia } = require('./services/wiki-verify');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
+
+const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('יש להעלות קובץ תמונה בלבד'));
+      cb(new Error('יש להעלות קובץ תמונה בפורמט JPEG, PNG, WebP או GIF בלבד'));
     }
   }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
 
-// In-memory job store (jobs expire after 5 minutes)
+// --- Rate limiting (configurable via env vars) ---
+const RATE_LIMIT_WINDOW_MS = (parseInt(process.env.ANALYZE_RATE_WINDOW_MINUTES, 10) || 10) * 60 * 1000;
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.ANALYZE_RATE_LIMIT, 10) || 10;
+const requestLog = new Map();
+
+function isRateLimited(ip) {
+  const now = Date.now();
+  const timestamps = (requestLog.get(ip) || []).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  if (timestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
+    requestLog.set(ip, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  requestLog.set(ip, timestamps);
+  return false;
+}
+
+function cleanOldRateLimitEntries() {
+  const now = Date.now();
+  for (const [ip, timestamps] of requestLog) {
+    const fresh = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (fresh.length === 0) requestLog.delete(ip);
+    else requestLog.set(ip, fresh);
+  }
+}
+
+const MAX_CONCURRENT_JOBS = 3;
+let activeJobs = 0;
+
 const jobs = new Map();
 
 function cleanOldJobs() {
@@ -35,8 +67,21 @@ function cleanOldJobs() {
   }
 }
 
+// Validate that a buffer is a real decodable image (not just a renamed file).
+async function validateImageBuffer(buffer) {
+  try {
+    const metadata = await sharp(buffer, { limitInputPixels: 40_000_000 }).metadata();
+    if (!metadata || !metadata.width || !metadata.height) {
+      return { valid: false, reason: 'לא ניתן לפענח את קובץ התמונה' };
+    }
+    return { valid: true, metadata };
+  } catch (e) {
+    return { valid: false, reason: 'הקובץ אינו תמונה תקינה או שהוא גדול מדי' };
+  }
+}
+
 async function compressImage(buffer, mimetype) {
-  const image = sharp(buffer);
+  const image = sharp(buffer, { limitInputPixels: 40_000_000 });
   const metadata = await image.metadata();
 
   let processed = image;
@@ -49,8 +94,12 @@ async function compressImage(buffer, mimetype) {
   return { buffer: output, mimetype: 'image/jpeg' };
 }
 
-// Step 1: Upload image, start analysis, return job ID immediately
-app.post('/api/analyze', upload.single('image'), async (req, res) => {
+app.post('/api/analyze', (req, res, next) => {
+  if (isRateLimited(req.ip)) {
+    return res.status(429).json({ error: 'יותר מדי בקשות. נסו שוב בעוד כמה דקות.' });
+  }
+  next();
+}, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'לא הועלתה תמונה' });
@@ -60,36 +109,51 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       return res.status(500).json({ error: 'מפתח API של Anthropic לא הוגדר' });
     }
 
+    // Validate that the uploaded buffer is actually a decodable image
+    const validation = await validateImageBuffer(req.file.buffer);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.reason });
+    }
+
+    if (activeJobs >= MAX_CONCURRENT_JOBS) {
+      return res.status(429).json({ error: 'השרת עמוס כרגע. נסו שוב בעוד כמה רגעים.' });
+    }
+
     cleanOldJobs();
+    cleanOldRateLimitEntries();
 
     const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     jobs.set(jobId, { status: 'processing', created: Date.now() });
 
-    // Return job ID immediately (within 1-2 seconds)
     res.json({ jobId });
 
-    // Process in background (with safety catch)
-    processImage(jobId, req.file.buffer, req.file.mimetype).catch(err => {
-      console.error('Unhandled processing error:', err);
-      jobs.set(jobId, { status: 'error', error: 'שגיאה לא צפויה. נסו שוב.', created: Date.now() });
-    });
+    activeJobs++;
+    processImage(jobId, req.file.buffer, req.file.mimetype)
+      .catch(err => {
+        console.error(`[${jobId}] Unhandled processing error:`, err.message || err);
+        jobs.set(jobId, { status: 'error', error: 'שגיאה לא צפויה. נסו שוב.', created: Date.now() });
+      })
+      .finally(() => {
+        activeJobs--;
+      });
   } catch (error) {
-    console.error('Upload error:', error);
+    console.error('Upload error:', error.message || error);
     res.status(500).json({ error: 'שגיאה בהעלאת התמונה' });
   }
 });
 
 async function processImage(jobId, fileBuffer, fileMimetype) {
+  const startTime = Date.now();
   try {
     console.log(`[${jobId}] Starting image processing...`);
     const compressed = await compressImage(fileBuffer, fileMimetype);
     console.log(`[${jobId}] Image compressed to ${Math.round(compressed.buffer.length / 1024)}KB`);
     const imageBase64 = compressed.buffer.toString('base64');
 
-    // Claude API call with 60s timeout
+    // Claude API call with 180s timeout safety net
     const claudePromise = analyzeWithClaude(imageBase64, compressed.mimetype);
     const claudeTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Claude API timeout (60s)')), 60000)
+      setTimeout(() => reject(new Error('Claude API timeout')), 180000)
     );
 
     const tasks = [Promise.race([claudePromise, claudeTimeout])];
@@ -100,9 +164,11 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
       tasks.push(Promise.resolve(null));
     }
 
-    console.log(`[${jobId}] Calling Claude API...`);
+    console.log(`[${jobId}] Calling Claude API + PlantNet...`);
     const [claudeResult, plantNetResult] = await Promise.allSettled(tasks);
-    console.log(`[${jobId}] Claude: ${claudeResult.status}, PlantNet: ${plantNetResult.status}`);
+
+    const claudeDuration = Date.now() - startTime;
+    console.log(`[${jobId}] Claude: ${claudeResult.status} (${claudeDuration}ms), PlantNet: ${plantNetResult.status}`);
 
     const claude = claudeResult.status === 'fulfilled' ? claudeResult.value : null;
     const plantNet = plantNetResult.status === 'fulfilled' ? plantNetResult.value : null;
@@ -113,34 +179,50 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
       jobs.set(jobId, { status: 'error', error: errMsg, created: Date.now() });
       return;
     }
-    console.log(`[${jobId}] Claude identified: ${claude?.identification?.scientificName}`);
 
-    // Check if PlantNet agrees with Claude or with one of the alternatives
-    maybePromoteAlternative(claude, plantNet);
+    // "success" is the new status; "identified" kept for backward compat
+    const wasIdentified = (claude?.status === 'success' || claude?.status === 'identified') && claude?.identification;
+    console.log(`[${jobId}] Claude status: ${claude?.status}, identified: ${claude?.identification?.scientificName || 'n/a'}`);
 
-    // Wikipedia verification (non-blocking, with timeout)
-    const sciName = claude?.identification?.scientificName;
-    let wikiResult = null;
-    let altWikiResult = null;
-    try {
-      wikiResult = await Promise.race([
-        verifyWithWikipedia(sciName),
-        new Promise((_, reject) => setTimeout(() => reject(), 6000))
-      ]);
-      if (wikiResult && !wikiResult.verified && claude?.identification?.alternativeMatches?.length > 0) {
-        const altName = claude.identification.alternativeMatches[0].scientificName;
-        altWikiResult = await Promise.race([
-          verifyWithWikipedia(altName),
+    let crossReference = { available: false, message: 'הצלבה עם מקורות חיצוניים לא זמינה', sources: [] };
+    let plantNetAvailable = true;
+
+    if (plantNetResult.status !== 'fulfilled' || !plantNet) {
+      plantNetAvailable = false;
+    }
+
+    if (wasIdentified) {
+      maybePromoteAlternative(claude, plantNet);
+
+      const sciName = claude.identification.scientificName;
+      let wikiResult = null;
+      let altWikiResult = null;
+      try {
+        wikiResult = await Promise.race([
+          verifyWithWikipedia(sciName),
           new Promise((_, reject) => setTimeout(() => reject(), 6000))
         ]);
-        // If Wikipedia matches an alternative but not the primary, promote it
-        if (altWikiResult?.verified) {
-          maybePromoteByWiki(claude, altName);
+        if (wikiResult && !wikiResult.verified && claude.identification.alternativeMatches?.length > 0) {
+          const altName = claude.identification.alternativeMatches[0].scientificName;
+          altWikiResult = await Promise.race([
+            verifyWithWikipedia(altName),
+            new Promise((_, reject) => setTimeout(() => reject(), 6000))
+          ]);
+          if (altWikiResult?.verified) {
+            maybePromoteByWiki(claude, altName);
+          }
         }
-      }
-    } catch(e) {}
+      } catch(e) {}
 
-    const crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult);
+      crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantNetAvailable);
+      claude.identification.confidenceLevel = confidenceLevelText(crossReference.combinedConfidence || claude.identification.confidence);
+
+      // Override toxicity verification when identification is uncertain
+      applyToxicityVerification(claude, crossReference);
+    }
+
+    const totalDuration = Date.now() - startTime;
+    console.log(`[${jobId}] Done in ${totalDuration}ms, cross-ref match: ${crossReference.matchLevel || 'n/a'}`);
 
     jobs.set(jobId, {
       status: 'done',
@@ -152,27 +234,24 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
         timestamp: new Date().toISOString()
       }
     });
-    console.log(`[${jobId}] Done!`);
   } catch (error) {
-    console.error(`[${jobId}] Processing error:`, error.message || error);
+    const totalDuration = Date.now() - startTime;
+    console.error(`[${jobId}] Processing error after ${totalDuration}ms:`, error.message || error);
     jobs.set(jobId, { status: 'error', error: 'שגיאה בניתוח התמונה. נסו שוב.', created: Date.now() });
   }
 }
 
-// Promote an alternative to primary if PlantNet matches an alternative but not the primary
 function maybePromoteAlternative(claude, plantNet) {
   if (!plantNet?.results?.length || !claude?.identification?.alternativeMatches?.length) return;
 
   const primaryName = claude.identification.scientificName?.toLowerCase().trim() || '';
   const primaryGenus = primaryName.split(' ')[0];
 
-  // Check if PlantNet's top result matches the primary
   const pnTopName = plantNet.results[0]?.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
   const pnTopGenus = pnTopName.split(' ')[0];
 
-  if (pnTopName === primaryName || pnTopGenus === primaryGenus) return; // Already agrees
+  if (pnTopName === primaryName || pnTopGenus === primaryGenus) return;
 
-  // Check if PlantNet matches any alternative
   for (let i = 0; i < claude.identification.alternativeMatches.length; i++) {
     const alt = claude.identification.alternativeMatches[i];
     const altName = alt.scientificName?.toLowerCase().trim() || '';
@@ -184,7 +263,6 @@ function maybePromoteAlternative(claude, plantNet) {
 
       if (pnName === altName || pnGenus === altGenus) {
         console.log(`Promoting alternative "${alt.scientificName}" (matched PlantNet) over primary "${claude.identification.scientificName}"`);
-        // Swap primary and alternative
         const oldPrimary = { ...claude.identification };
         delete oldPrimary.alternativeMatches;
         claude.identification.commonNameHe = alt.commonNameHe || oldPrimary.commonNameHe;
@@ -205,7 +283,6 @@ function maybePromoteAlternative(claude, plantNet) {
   }
 }
 
-// Promote an alternative if Wikipedia verifies it but not the primary
 function maybePromoteByWiki(claude, verifiedAltName) {
   if (!claude?.identification?.alternativeMatches?.length) return;
   const altIdx = claude.identification.alternativeMatches.findIndex(
@@ -231,7 +308,6 @@ function maybePromoteByWiki(claude, verifiedAltName) {
   };
 }
 
-// Step 2: Poll for results (fast response, no timeout issues)
 app.get('/api/result/:jobId', (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) {
@@ -244,16 +320,28 @@ app.get('/api/result/:jobId', (req, res) => {
     jobs.delete(req.params.jobId);
     return res.json({ status: 'error', error: job.error });
   }
-  // Done
   const result = job.result;
   jobs.delete(req.params.jobId);
   res.json({ status: 'done', ...result });
 });
 
-function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
+function confidenceLevelText(conf) {
+  const c = conf || 0;
+  if (c >= 0.85) return 'רמת אמינות גבוהה מאוד';
+  if (c >= 0.65) return 'רמת אמינות גבוהה';
+  if (c >= 0.4) return 'רמת אמינות בינונית';
+  return 'רמת אמינות נמוכה';
+}
+
+const DISAGREEMENT_WARNING = 'הזיהוי אינו ודאי — מומלץ לצלם תמונות נוספות.';
+
+function buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantNetAvailable) {
   const claudeName = claude?.identification?.scientificName?.toLowerCase().trim() || '';
   const claudeGenus = claudeName.split(' ')[0];
   const claudeConf = claude?.identification?.confidence || 0;
+  const hasSignificantAlternatives = (claude?.identification?.alternativeMatches || [])
+    .some(a => (a.confidence || 0) >= claudeConf - 0.15);
+  const imageQuality = claude?.imageQuality?.overall || 'good';
 
   const sources = [];
   let matchLevel = 'none';
@@ -267,11 +355,29 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
       if (pnName === claudeName) { matchLevel = 'species'; break; }
       if (pnGenus === claudeGenus && matchLevel === 'none') { matchLevel = 'genus'; }
     }
+
+    const pnTopSci = plantNetTop?.species?.scientificNameWithoutAuthor || 'לא זוהה';
+    let agreementNote = '';
+    if (matchLevel === 'genus') {
+      agreementNote = `PlantNet מזהה את אותו סוג (${claudeGenus}) אך מין שונה: ${pnTopSci}`;
+    }
+
     sources.push({
       name: 'PlantNet',
-      topResult: plantNetTop?.species?.scientificNameWithoutAuthor || 'לא זוהה',
+      topResult: pnTopSci,
       score: plantNetTop?.score || 0,
-      agrees: matchLevel !== 'none'
+      agrees: matchLevel === 'species',
+      matchLevel,
+      note: agreementNote || undefined
+    });
+  } else if (!plantNetAvailable) {
+    sources.push({
+      name: 'PlantNet',
+      topResult: null,
+      score: 0,
+      agrees: false,
+      matchLevel: 'unavailable',
+      note: 'הצלבה עם PlantNet לא הייתה זמינה בסריקה זו.'
     });
   }
 
@@ -282,7 +388,8 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
         topResult: wikiResult.taxonName || wikiResult.englishName,
         hebrewName: wikiResult.hebrewName,
         score: 1,
-        agrees: true
+        agrees: true,
+        note: 'השם המדעי אומת כ-taxon תקין בוויקיפדיה (אימות קיום השם, לא זיהוי התמונה).'
       });
     } else if (altWikiResult?.verified) {
       const altName = claude?.identification?.alternativeMatches?.[0];
@@ -306,39 +413,62 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
   }
 
   const agreeingSources = sources.filter(s => s.agrees).length;
-  const totalSources = sources.length;
+  const totalSources = sources.filter(s => s.matchLevel !== 'unavailable').length;
 
   let combinedConfidence;
   let agreementMessage;
+  let disagreementWarning = null;
 
   if (totalSources === 0) {
     return {
       available: false,
       message: 'הצלבה עם מקורות חיצוניים לא זמינה',
       confidence: claudeConf,
-      sources: []
+      confidenceLevel: confidenceLevelText(claudeConf),
+      sources
     };
   }
 
   if (agreeingSources === totalSources && totalSources >= 2) {
-    combinedConfidence = Math.min(1, claudeConf * 1.2);
-    agreementMessage = `כל ${totalSources} המקורות מסכימים — רמת ודאות גבוהה מאוד`;
+    combinedConfidence = Math.min(1, claudeConf * 1.15);
+    agreementMessage = `כל ${totalSources} המקורות מסכימים על הזיהוי`;
   } else if (agreeingSources === totalSources) {
-    combinedConfidence = Math.min(1, claudeConf * 1.1);
+    combinedConfidence = Math.min(1, claudeConf * 1.05);
     agreementMessage = 'הזיהוי אומת מול מקור חיצוני';
+  } else if (matchLevel === 'genus') {
+    // Genus agreement but species disagreement — do NOT boost
+    combinedConfidence = Math.min(claudeConf, 0.75);
+    agreementMessage = 'המקורות מסכימים על הסוג (genus) אך חלוקים על המין (species)';
+    disagreementWarning = DISAGREEMENT_WARNING;
   } else if (agreeingSources > 0) {
     combinedConfidence = claudeConf * 0.85;
-    agreementMessage = 'חלק מהמקורות מסכימים — מומלץ לצלם מזווית נוספת';
+    agreementMessage = 'חלק מהמקורות מסכימים עם הזיהוי';
+    disagreementWarning = DISAGREEMENT_WARNING;
   } else {
     combinedConfidence = claudeConf * 0.5;
-    agreementMessage = 'המקורות לא מאשרים — מומלץ לבדוק שוב או להתייעץ עם מומחה';
+    agreementMessage = 'המקורות אינם מאשרים את הזיהוי';
+    disagreementWarning = DISAGREEMENT_WARNING;
   }
+
+  // Factor in significant alternatives and poor image quality
+  if (hasSignificantAlternatives && combinedConfidence > 0.8) {
+    combinedConfidence = Math.min(combinedConfidence, 0.8);
+  }
+  if (imageQuality === 'poor' && combinedConfidence > 0.6) {
+    combinedConfidence = Math.min(combinedConfidence, 0.6);
+  } else if (imageQuality === 'acceptable' && combinedConfidence > 0.85) {
+    combinedConfidence = Math.min(combinedConfidence, 0.85);
+  }
+
+  combinedConfidence = Math.round(combinedConfidence * 100) / 100;
 
   return {
     available: true,
     matchLevel,
-    combinedConfidence: Math.round(combinedConfidence * 100) / 100,
+    combinedConfidence,
+    confidenceLevel: confidenceLevelText(combinedConfidence),
     agreementMessage,
+    disagreementWarning,
     sources,
     plantNetTopResult: plantNetTop ? {
       name: plantNetTop.species?.scientificNameWithoutAuthor,
@@ -348,17 +478,42 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult) {
   };
 }
 
+// Ensure toxicity verification is conservative when identification is uncertain
+function applyToxicityVerification(claude, crossReference) {
+  if (!claude?.toxicity) return;
+
+  const idConfidence = claude.identification?.confidence || 0;
+  const combinedConfidence = crossReference?.combinedConfidence || idConfidence;
+  const hasDisagreement = !!crossReference?.disagreementWarning;
+
+  // If Claude already set verification, check if we need to downgrade
+  const currentVerification = claude.toxicity.verification || 'unknown';
+
+  if (combinedConfidence < 0.4 || currentVerification === 'unknown') {
+    claude.toxicity.verification = 'unknown';
+  } else if (combinedConfidence < 0.7 || hasDisagreement || currentVerification === 'uncertain') {
+    claude.toxicity.verification = 'uncertain';
+  }
+  // If verified and confidence is high with no disagreement, keep "verified"
+}
+
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ error: 'הקובץ גדול מדי. הגודל המרבי הוא 15MB' });
     }
-    return res.status(400).json({ error: 'שגיאה בהעלאת הקובץ: ' + err.message });
+    return res.status(400).json({ error: 'שגיאה בהעלאת הקובץ' });
   }
-  if (err.message === 'יש להעלות קובץ תמונה בלבד') {
+  if (err.message && err.message.startsWith('יש להעלות קובץ תמונה')) {
     return res.status(400).json({ error: err.message });
   }
   next(err);
+});
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.message || err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'שגיאה בשרת. נסו שוב מאוחר יותר.' });
 });
 
 app.get('/api/health', (req, res) => {
@@ -373,4 +528,5 @@ app.listen(PORT, () => {
   console.log(`Plant Identifier running at http://localhost:${PORT}`);
   console.log(`Anthropic API: ${process.env.ANTHROPIC_API_KEY ? 'configured' : 'MISSING'}`);
   console.log(`PlantNet API: ${process.env.PLANTNET_API_KEY ? 'configured' : 'not configured (optional)'}`);
+  console.log(`Rate limit: ${RATE_LIMIT_MAX_REQUESTS} requests per ${RATE_LIMIT_WINDOW_MS / 60000} minutes`);
 });

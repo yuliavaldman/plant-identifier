@@ -44,7 +44,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-
   clearBtn.addEventListener('click', resetUpload);
   analyzeBtn.addEventListener('click', analyzeImage);
   newScanBtn.addEventListener('click', resetToUpload);
@@ -97,6 +96,36 @@ document.addEventListener('DOMContentLoaded', () => {
   function showError(title, message) {
     document.getElementById('errorTitle').textContent = title;
     document.getElementById('errorMessage').textContent = message;
+    const suggestionsEl = document.getElementById('errorSuggestions');
+    if (suggestionsEl) suggestionsEl.hidden = true;
+    showSection('error');
+  }
+
+  // Friendly display for insufficient_image with photo suggestions
+  function showInsufficientImage(analysis) {
+    const reason = analysis.reason || analysis.message || 'לא ניתן לזהות את הצמח מהתמונה הנוכחית.';
+    document.getElementById('errorTitle').textContent = 'דרושה תמונה טובה יותר';
+    document.getElementById('errorMessage').textContent = reason;
+
+    const suggestionsEl = document.getElementById('errorSuggestions');
+    if (suggestionsEl) {
+      const photos = analysis.suggestedPhotos || [];
+      if (photos.length > 0) {
+        let html = '<div class="suggested-photos"><h4>💡 מה יעזור לזיהוי:</h4><ul>';
+        for (const photo of photos) {
+          html += `<li>📷 ${esc(photo)}</li>`;
+        }
+        html += '</ul></div>';
+        suggestionsEl.innerHTML = html;
+        suggestionsEl.hidden = false;
+      } else {
+        suggestionsEl.hidden = true;
+      }
+    }
+
+    const errorIcon = document.querySelector('.error-icon');
+    if (errorIcon) errorIcon.textContent = '📸';
+
     showSection('error');
   }
 
@@ -120,7 +149,6 @@ document.addEventListener('DOMContentLoaded', () => {
     let waitingIdx = 0;
     let elapsedSeconds = 0;
 
-    // Live timer
     const timerEl = document.getElementById('loadingTimer');
     if (timerEl) timerEl.textContent = '';
     const timerInterval = setInterval(() => {
@@ -148,7 +176,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('image', selectedFile);
 
-      // Step 1: Upload image and get job ID (fast response)
       const uploadRes = await fetch('/api/analyze', {
         method: 'POST',
         body: formData
@@ -163,10 +190,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (uploadError) throw new Error(uploadError);
       if (!jobId) throw new Error('שגיאה בתחילת הניתוח');
 
-      // Step 2: Poll for results every 3 seconds
       const data = await new Promise((resolve, reject) => {
         let attempts = 0;
-        const maxAttempts = 60; // 60 * 3s = 3 minutes max
+        const maxAttempts = 60;
 
         const poll = setInterval(async () => {
           attempts++;
@@ -199,11 +225,25 @@ document.addEventListener('DOMContentLoaded', () => {
       clearInterval(stepInterval);
       clearInterval(timerInterval);
 
-      if (data.analysis && !data.analysis.isPlant) {
-        showError(
-          'לא זוהה צמח',
-          data.analysis.notPlantMessage || 'התמונה אינה מכילה צמח. נסו לצלם תמונה של צמח.'
-        );
+      const status = data.analysis?.status;
+
+      if (status === 'not_a_plant') {
+        const errorIcon = document.querySelector('.error-icon');
+        if (errorIcon) errorIcon.textContent = '❌';
+        showError('לא זוהה צמח', data.analysis.message || 'התמונה אינה מכילה צמח. נסו לצלם תמונה של צמח.');
+        analyzeBtn.disabled = false;
+        return;
+      }
+      if (status === 'insufficient_image') {
+        showInsufficientImage(data.analysis);
+        analyzeBtn.disabled = false;
+        return;
+      }
+      // Legacy fallback for older cached responses
+      if (data.analysis && data.analysis.isPlant === false) {
+        const errorIcon = document.querySelector('.error-icon');
+        if (errorIcon) errorIcon.textContent = '❌';
+        showError('לא זוהה צמח', data.analysis.notPlantMessage || 'התמונה אינה מכילה צמח.');
         analyzeBtn.disabled = false;
         return;
       }
@@ -214,6 +254,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       clearInterval(stepInterval);
       clearInterval(timerInterval);
+      const errorIcon = document.querySelector('.error-icon');
+      if (errorIcon) errorIcon.textContent = '❌';
       showError('שגיאה', error.message);
     }
 
@@ -224,14 +266,66 @@ document.addEventListener('DOMContentLoaded', () => {
     const analysis = data.analysis;
     if (!analysis) return;
 
+    renderImageQuality(analysis);
     renderIdentification(analysis);
+    renderObservations(analysis);
     renderCrossReference(data.crossReference);
     renderHealth(analysis);
     renderIssues(analysis);
+    renderFollowUpQuestions(analysis);
     renderCare(analysis);
     renderToxicity(analysis);
     renderSeasonal(analysis);
     renderExtras(analysis);
+  }
+
+  function confidenceLevelText(conf) {
+    const c = conf || 0;
+    if (c >= 0.85) return 'רמת אמינות גבוהה מאוד';
+    if (c >= 0.65) return 'רמת אמינות גבוהה';
+    if (c >= 0.4) return 'רמת אמינות בינונית';
+    return 'רמת אמינות נמוכה';
+  }
+
+  function confidenceLevelClass(conf) {
+    const c = conf || 0;
+    return c >= 0.65 ? 'confidence-high' : c >= 0.4 ? 'confidence-medium' : 'confidence-low';
+  }
+
+  function renderImageQuality(a) {
+    const card = document.getElementById('imageQualityCard');
+    if (!card) return;
+
+    const iq = a.imageQuality;
+    if (!iq || iq.overall === 'good') {
+      card.hidden = true;
+      return;
+    }
+
+    card.hidden = false;
+    const labels = { acceptable: 'סבירה', poor: 'נמוכה' };
+    const icons = { acceptable: '🟡', poor: '🔴' };
+    const issueLabels = {
+      blur: 'תמונה מטושטשת',
+      too_dark: 'תמונה כהה מדי',
+      too_bright: 'תמונה בהירה מדי',
+      plant_too_small: 'הצמח קטן מדי בתמונה',
+      damaged_area_not_visible: 'אזור הנזק לא נראה בבירור',
+      multiple_plants: 'מספר צמחים בתמונה',
+      insufficient_detail: 'חסרים פרטים לזיהוי'
+    };
+
+    let html = `<div class="image-quality-notice">
+      <span>${icons[iq.overall] || '🟡'} איכות תמונה: ${esc(labels[iq.overall] || iq.overall)}</span>`;
+    if (iq.issues && iq.issues.length > 0) {
+      html += '<ul>';
+      for (const issue of iq.issues) {
+        html += `<li>${esc(issueLabels[issue] || issue)}</li>`;
+      }
+      html += '</ul>';
+    }
+    html += '<div class="image-quality-tip">תמונה ברורה וקרובה יותר תשפר את דיוק הזיהוי.</div></div>';
+    document.getElementById('imageQualityBody').innerHTML = html;
   }
 
   function renderIdentification(a) {
@@ -240,10 +334,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const conf = id.confidence || 0;
     const badge = document.getElementById('confidenceBadge');
-    const confPct = Math.round(conf * 100);
-    badge.textContent = `${confPct}% ודאות`;
-    badge.className = 'confidence-badge ' +
-      (conf >= 0.7 ? 'confidence-high' : conf >= 0.4 ? 'confidence-medium' : 'confidence-low');
+    badge.textContent = id.confidenceLevel || confidenceLevelText(conf);
+    badge.className = 'confidence-badge ' + confidenceLevelClass(conf);
 
     let html = `
       <div class="plant-name">${esc(id.commonNameHe || id.commonNameEn || 'לא ידוע')}</div>
@@ -260,17 +352,20 @@ document.addEventListener('DOMContentLoaded', () => {
       html += `<div style="color:var(--text-muted);font-size:0.9rem;margin-bottom:8px">מוצא: ${esc(id.origin)}</div>`;
     }
 
+    if (id.uncertaintyNote) {
+      html += `<div style="background:rgba(245,124,0,0.08);border-right:3px solid var(--warning);padding:10px 14px;border-radius:var(--radius-sm);margin-bottom:12px;font-size:0.9rem;color:var(--text)">⚠️ ${esc(id.uncertaintyNote)}</div>`;
+    }
+
     if (id.alternativeMatches && id.alternativeMatches.length > 0) {
       html += `<div class="alt-matches"><h4>זיהויים חלופיים אפשריים:</h4>`;
       for (const alt of id.alternativeMatches) {
-        const altConf = Math.round((alt.confidence || 0) * 100);
         html += `
           <div class="alt-match-item">
             <div>
               <span class="alt-match-name">${esc(alt.commonNameHe || alt.commonNameEn || '')}</span>
               <span style="color:var(--text-muted);font-style:italic;margin-right:8px">${esc(alt.scientificName || '')}</span>
             </div>
-            <span class="alt-match-conf">${altConf}%</span>
+            <span class="alt-match-conf">${esc(confidenceLevelText(alt.confidence))}</span>
           </div>`;
         if (alt.differentiatingFeature) {
           html += `<div style="font-size:0.8rem;color:var(--text-light);padding:0 12px 6px">↳ ${esc(alt.differentiatingFeature)}</div>`;
@@ -282,18 +377,51 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('identificationBody').innerHTML = html;
   }
 
+  function renderObservations(a) {
+    const card = document.getElementById('observationsCard');
+    if (!card) return;
+
+    const obs = a.observations;
+    if (!obs || obs.length === 0) {
+      card.hidden = true;
+      return;
+    }
+
+    card.hidden = false;
+    let html = '<ul class="observations-list">';
+    for (const ob of obs) {
+      html += `<li>${esc(ob)}</li>`;
+    }
+    html += '</ul>';
+    document.getElementById('observationsBody').innerHTML = html;
+  }
+
   function renderCrossReference(cr) {
     const card = document.getElementById('crossRefCard');
     const body = document.getElementById('crossRefBody');
 
     if (!cr || !cr.available) {
+      // Show unavailable message if we have sources with notes
+      if (cr && cr.sources && cr.sources.length > 0) {
+        card.hidden = false;
+        let html = '';
+        for (const src of cr.sources) {
+          if (src.note) {
+            html += `<div class="cross-ref-match"><div class="match-icon">ℹ️</div><div class="match-info"><div class="match-status">${esc(src.note)}</div></div></div>`;
+          }
+        }
+        if (html) {
+          body.innerHTML = html;
+          return;
+        }
+      }
       card.hidden = true;
       return;
     }
 
     card.hidden = false;
     const agreeingSources = (cr.sources || []).filter(s => s.agrees).length;
-    const totalSources = (cr.sources || []).length;
+    const totalSources = (cr.sources || []).filter(s => s.matchLevel !== 'unavailable').length;
     const overallIcon = agreeingSources === totalSources && totalSources > 0 ? '✅' : agreeingSources > 0 ? '🔶' : '⚠️';
 
     let html = `
@@ -301,24 +429,42 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="match-icon">${overallIcon}</div>
         <div class="match-info">
           <div class="match-status">${esc(cr.agreementMessage)}</div>
-          <div class="match-detail">רמת ודאות משולבת: ${Math.round((cr.combinedConfidence || 0) * 100)}%</div>
+          <div class="match-detail">${esc(cr.confidenceLevel || confidenceLevelText(cr.combinedConfidence))}</div>
         </div>
       </div>`;
 
+    if (cr.disagreementWarning) {
+      html += `
+        <div class="cross-ref-match" style="background:rgba(211,47,47,0.06);border:1px solid rgba(211,47,47,0.15)">
+          <div class="match-icon">🔎</div>
+          <div class="match-info">
+            <div class="match-status" style="color:var(--danger)">${esc(cr.disagreementWarning)}</div>
+          </div>
+        </div>`;
+    }
+
     for (const src of (cr.sources || [])) {
-      const srcIcon = src.agrees ? '✅' : '❌';
+      const isUnavailable = src.matchLevel === 'unavailable';
+      const srcIcon = isUnavailable ? 'ℹ️' : src.agrees ? '✅' : src.matchLevel === 'genus' ? '🔶' : '❌';
+      const isPlantNet = src.name === 'PlantNet';
       html += `
         <div class="cross-ref-match">
           <div class="match-icon">${srcIcon}</div>
           <div class="match-info">
-            <div class="match-status">${esc(src.name)}: ${esc(src.topResult || 'לא נמצא')}</div>
+            <div class="match-status">${esc(src.name)}: ${esc(src.topResult || (isUnavailable ? 'לא זמין' : 'לא נמצא'))}</div>
             <div class="match-detail">
               ${src.hebrewName ? 'בעברית: ' + esc(src.hebrewName) + ' — ' : ''}
-              ${src.score > 0 ? 'ציון: ' + Math.round(src.score * 100) + '%' : ''}
+              ${!isUnavailable && src.score > 0 ? (isPlantNet ? 'ציון התאמה של PlantNet: ' : 'ציון: ') + Math.round(src.score * 100) + '%' : ''}
               ${src.note ? '<br>' + esc(src.note) : ''}
             </div>
           </div>
         </div>`;
+    }
+
+    if ((cr.sources || []).some(s => s.name === 'PlantNet' && s.matchLevel !== 'unavailable')) {
+      html += `<div style="font-size:0.78rem;color:var(--text-muted);margin-top:6px">
+        ציון ההתאמה של PlantNet משקף דמיון חזותי למאגר התמונות שלהם — הוא אינו הסתברות מדעית שהזיהוי נכון.
+      </div>`;
     }
 
     body.innerHTML = html;
@@ -374,18 +520,89 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    const severityLabels = { low: 'נמוך', medium: 'בינוני', high: 'גבוה', urgent: 'דחוף', critical: 'קריטי' };
+    const severityClass = { low: 'severity-low', medium: 'severity-medium', high: 'severity-high', urgent: 'severity-critical', critical: 'severity-critical' };
+    const likelihoodLabels = { high: 'סבירות גבוהה', medium: 'סבירות בינונית', low: 'סבירות נמוכה' };
+    const categoryLabels = {
+      pest: 'מזיקים', fungal: 'פטרייתי', bacterial: 'חיידקי', viral: 'נגיפי',
+      nutritional: 'תזונתי', watering: 'השקיה', light: 'תאורה',
+      temperature: 'טמפרטורה', mechanical: 'מכני', unknown: 'לא ידוע'
+    };
+
     card.hidden = false;
     let html = '';
     for (const issue of a.issues) {
+      const sev = issue.severity || 'medium';
       html += `
         <div class="issue-item">
           <div class="issue-header">
             <span class="issue-name">⚠️ ${esc(issue.name || '')}</span>
-            <span class="severity-badge severity-${issue.severity || 'medium'}">${
-              {low: 'נמוך', medium: 'בינוני', high: 'גבוה', critical: 'קריטי'}[issue.severity] || issue.severity
-            }</span>
-          </div>
-          <p class="issue-description">${esc(issue.description || '')}</p>`;
+            <span class="severity-badge ${severityClass[sev] || 'severity-medium'}">${esc(severityLabels[sev] || sev)}</span>
+          </div>`;
+
+      // Category and likelihood badges
+      const cat = issue.category;
+      const lh = issue.likelihood;
+      if (cat || lh) {
+        html += '<div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap">';
+        if (cat && categoryLabels[cat]) {
+          html += `<span class="severity-badge severity-low" style="font-size:0.75rem">${esc(categoryLabels[cat])}</span>`;
+        }
+        if (lh) {
+          html += `<span class="severity-badge severity-low" style="font-size:0.75rem">${esc(likelihoodLabels[lh] || lh)}</span>`;
+        }
+        html += '</div>';
+      }
+
+      // Legacy urgency field (backward compat)
+      if (issue.urgency && !issue.likelihood) {
+        const urgencyLabels = { routine: 'לא דחוף', soon: 'בקרוב', urgent: 'דחוף' };
+        const urgencyClass = { routine: 'severity-low', soon: 'severity-medium', urgent: 'severity-critical' };
+        html += `<div style="margin-bottom:8px"><span class="severity-badge ${urgencyClass[issue.urgency] || 'severity-medium'}">דחיפות: ${esc(urgencyLabels[issue.urgency] || issue.urgency)}</span></div>`;
+      }
+
+      // mostLikelyDiagnosis (legacy) or description
+      if (issue.mostLikelyDiagnosis) {
+        html += `<div class="issue-subsection"><h5>האבחנה הסבירה ביותר:</h5><p>${esc(issue.mostLikelyDiagnosis)}</p></div>`;
+      } else if (issue.description) {
+        html += `<p class="issue-description">${esc(issue.description)}</p>`;
+      }
+
+      // visibleEvidence (new) or evidenceVisible (legacy)
+      const visEvidence = issue.visibleEvidence || issue.evidenceVisible;
+      if (visEvidence && visEvidence.length > 0) {
+        html += `<div class="issue-subsection"><h5>מה רואים בתמונה:</h5><ul>`;
+        for (const ev of visEvidence) html += `<li>${esc(ev)}</li>`;
+        html += `</ul></div>`;
+      }
+
+      // missingEvidence (new) or evidenceMissing (legacy)
+      const missEvidence = issue.missingEvidence || issue.evidenceMissing;
+      if (missEvidence && missEvidence.length > 0) {
+        html += `<div class="issue-subsection"><h5>מידע שחסר לאבחנה ודאית:</h5><ul>`;
+        for (const ev of missEvidence) html += `<li>${esc(ev)}</li>`;
+        html += `</ul></div>`;
+      }
+
+      // alternativeExplanations (new) or alternativePossibilities (legacy)
+      const altExpl = issue.alternativeExplanations || issue.alternativePossibilities;
+      if (altExpl && altExpl.length > 0) {
+        html += `<div class="issue-subsection"><h5>אפשרויות נוספות שלא נשללו:</h5><ul>`;
+        for (const alt of altExpl) html += `<li>${esc(alt)}</li>`;
+        html += `</ul></div>`;
+      }
+
+      // questionsToConfirm (new) or differentiatingQuestions (legacy)
+      const questions = issue.questionsToConfirm || issue.differentiatingQuestions;
+      if (questions && questions.length > 0) {
+        html += `<div class="issue-subsection"><h5>שאלות שיעזרו לצמצם את האבחנה:</h5><ul>`;
+        for (const q of questions) html += `<li>${esc(q)}</li>`;
+        html += `</ul></div>`;
+      }
+
+      if (issue.recommendedNextStep) {
+        html += `<div class="issue-subsection"><h5>הצעד הבא המומלץ:</h5><p>${esc(issue.recommendedNextStep)}</p></div>`;
+      }
 
       if (issue.treatment) {
         const t = issue.treatment;
@@ -403,6 +620,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     body.innerHTML = html;
+  }
+
+  function renderFollowUpQuestions(a) {
+    const card = document.getElementById('followUpCard');
+    if (!card) return;
+
+    const questions = a.followUpQuestions;
+    if (!questions || questions.length === 0) {
+      card.hidden = true;
+      return;
+    }
+
+    card.hidden = false;
+    let html = '<div class="follow-up-intro">שאלות אלו יעזרו לשפר את דיוק האבחון:</div><ul class="follow-up-list">';
+    for (const q of questions) {
+      html += `<li>❓ ${esc(q)}</li>`;
+    }
+    html += '</ul>';
+    document.getElementById('followUpBody').innerHTML = html;
   }
 
   function renderCare(a) {
@@ -449,22 +685,43 @@ document.addEventListener('DOMContentLoaded', () => {
     const tox = a.toxicity;
     if (!tox) return;
 
+    const verification = tox.verification || 'unknown';
     const pets = tox.forPets || {};
     const humans = tox.forHumans || {};
 
-    let html = '<div class="toxicity-grid">';
+    let html = '';
+
+    // Verification warning
+    if (verification === 'uncertain' || verification === 'unknown') {
+      const warningMsg = verification === 'unknown'
+        ? 'מידע הרעילות לא אומת מול מקור חיצוני. אין להסתמך על הזיהוי בלבד במקרה של בליעה.'
+        : 'מידע הרעילות אינו ודאי — הזיהוי עצמו אינו מאומת במלואו. אין להסתמך על מידע זה בלבד.';
+      html += `<div class="toxicity-warning">⚠️ ${esc(warningMsg)}</div>`;
+    }
+
+    html += '<div class="toxicity-grid">';
+
+    const petsClass = verification === 'verified'
+      ? (pets.toxic ? 'toxicity-danger' : 'toxicity-safe')
+      : 'toxicity-uncertain';
+    const humansClass = verification === 'verified'
+      ? (humans.toxic ? 'toxicity-danger' : 'toxicity-safe')
+      : 'toxicity-uncertain';
+
+    const petsIcon = verification !== 'verified' ? '🐾❓' : (pets.toxic ? '🐾⚠️' : '🐾✅');
+    const humansIcon = verification !== 'verified' ? '👤❓' : (humans.toxic ? '👤⚠️' : '👤✅');
 
     html += `
-      <div class="toxicity-item ${pets.toxic ? 'toxicity-danger' : 'toxicity-safe'}">
-        <div class="toxicity-icon">${pets.toxic ? '🐾⚠️' : '🐾✅'}</div>
+      <div class="toxicity-item ${petsClass}">
+        <div class="toxicity-icon">${petsIcon}</div>
         <div class="toxicity-label">חיות מחמד</div>
         <div class="toxicity-details">${esc(pets.details || (pets.toxic ? 'רעיל' : 'לא רעיל'))}</div>
         ${pets.symptoms ? `<div class="toxicity-details" style="margin-top:4px;font-size:0.8rem">${esc(pets.symptoms)}</div>` : ''}
       </div>`;
 
     html += `
-      <div class="toxicity-item ${humans.toxic ? 'toxicity-danger' : 'toxicity-safe'}">
-        <div class="toxicity-icon">${humans.toxic ? '👤⚠️' : '👤✅'}</div>
+      <div class="toxicity-item ${humansClass}">
+        <div class="toxicity-icon">${humansIcon}</div>
         <div class="toxicity-label">בני אדם</div>
         <div class="toxicity-details">${esc(humans.details || (humans.toxic ? 'רעיל' : 'לא רעיל'))}</div>
         ${humans.symptoms ? `<div class="toxicity-details" style="margin-top:4px;font-size:0.8rem">${esc(humans.symptoms)}</div>` : ''}
