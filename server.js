@@ -115,6 +115,9 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
     }
     console.log(`[${jobId}] Claude identified: ${claude?.identification?.scientificName}`);
 
+    // Check if PlantNet agrees with Claude or with one of the alternatives
+    maybePromoteAlternative(claude, plantNet);
+
     // Wikipedia verification (non-blocking, with timeout)
     const sciName = claude?.identification?.scientificName;
     let wikiResult = null;
@@ -130,6 +133,10 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
           verifyWithWikipedia(altName),
           new Promise((_, reject) => setTimeout(() => reject(), 6000))
         ]);
+        // If Wikipedia matches an alternative but not the primary, promote it
+        if (altWikiResult?.verified) {
+          maybePromoteByWiki(claude, altName);
+        }
       }
     } catch(e) {}
 
@@ -150,6 +157,78 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
     console.error(`[${jobId}] Processing error:`, error.message || error);
     jobs.set(jobId, { status: 'error', error: 'שגיאה בניתוח התמונה. נסו שוב.', created: Date.now() });
   }
+}
+
+// Promote an alternative to primary if PlantNet matches an alternative but not the primary
+function maybePromoteAlternative(claude, plantNet) {
+  if (!plantNet?.results?.length || !claude?.identification?.alternativeMatches?.length) return;
+
+  const primaryName = claude.identification.scientificName?.toLowerCase().trim() || '';
+  const primaryGenus = primaryName.split(' ')[0];
+
+  // Check if PlantNet's top result matches the primary
+  const pnTopName = plantNet.results[0]?.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
+  const pnTopGenus = pnTopName.split(' ')[0];
+
+  if (pnTopName === primaryName || pnTopGenus === primaryGenus) return; // Already agrees
+
+  // Check if PlantNet matches any alternative
+  for (let i = 0; i < claude.identification.alternativeMatches.length; i++) {
+    const alt = claude.identification.alternativeMatches[i];
+    const altName = alt.scientificName?.toLowerCase().trim() || '';
+    const altGenus = altName.split(' ')[0];
+
+    for (const pnResult of plantNet.results.slice(0, 3)) {
+      const pnName = pnResult.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
+      const pnGenus = pnName.split(' ')[0];
+
+      if (pnName === altName || pnGenus === altGenus) {
+        console.log(`Promoting alternative "${alt.scientificName}" (matched PlantNet) over primary "${claude.identification.scientificName}"`);
+        // Swap primary and alternative
+        const oldPrimary = { ...claude.identification };
+        delete oldPrimary.alternativeMatches;
+        claude.identification.commonNameHe = alt.commonNameHe || oldPrimary.commonNameHe;
+        claude.identification.commonNameEn = alt.commonNameEn || oldPrimary.commonNameEn;
+        claude.identification.scientificName = alt.scientificName;
+        claude.identification.confidence = Math.max(alt.confidence || 0, oldPrimary.confidence || 0);
+        claude.identification.description = alt.description || oldPrimary.description;
+        claude.identification.alternativeMatches[i] = {
+          scientificName: oldPrimary.scientificName,
+          commonNameHe: oldPrimary.commonNameHe,
+          commonNameEn: oldPrimary.commonNameEn,
+          confidence: oldPrimary.confidence * 0.8,
+          differentiatingFeature: alt.differentiatingFeature || ''
+        };
+        return;
+      }
+    }
+  }
+}
+
+// Promote an alternative if Wikipedia verifies it but not the primary
+function maybePromoteByWiki(claude, verifiedAltName) {
+  if (!claude?.identification?.alternativeMatches?.length) return;
+  const altIdx = claude.identification.alternativeMatches.findIndex(
+    a => a.scientificName?.toLowerCase().trim() === verifiedAltName?.toLowerCase().trim()
+  );
+  if (altIdx === -1) return;
+
+  const alt = claude.identification.alternativeMatches[altIdx];
+  console.log(`Promoting alternative "${alt.scientificName}" (verified by Wikipedia) over primary "${claude.identification.scientificName}"`);
+
+  const oldPrimary = { ...claude.identification };
+  delete oldPrimary.alternativeMatches;
+  claude.identification.commonNameHe = alt.commonNameHe || oldPrimary.commonNameHe;
+  claude.identification.commonNameEn = alt.commonNameEn || oldPrimary.commonNameEn;
+  claude.identification.scientificName = alt.scientificName;
+  claude.identification.confidence = Math.max(alt.confidence || 0, oldPrimary.confidence || 0);
+  claude.identification.alternativeMatches[altIdx] = {
+    scientificName: oldPrimary.scientificName,
+    commonNameHe: oldPrimary.commonNameHe,
+    commonNameEn: oldPrimary.commonNameEn,
+    confidence: oldPrimary.confidence * 0.8,
+    differentiatingFeature: alt.differentiatingFeature || ''
+  };
 }
 
 // Step 2: Poll for results (fast response, no timeout issues)

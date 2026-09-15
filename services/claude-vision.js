@@ -7,8 +7,14 @@ Return ONLY valid JSON (no markdown fences). All text values in Hebrew. Be conci
 If not a plant, return {"isPlant":false,"notPlantMessage":"הסבר"}.
 
 Identify by analyzing: leaf shape/margin/arrangement, stem type, flowers/fruits if visible, growth habit.
-If unsure of exact species, stay at genus level and lower confidence.
 Consider Israeli/Mediterranean climate for care tips.
+
+CRITICAL IDENTIFICATION RULES:
+- Examine diagnostic features carefully before choosing between similar species
+- If two or more species are plausible, give them SIMILAR confidence scores (within 0.1 of each other) — do not artificially inflate the top pick
+- If unsure of exact species, stay at genus level and set confidence below 0.7
+- Always list at least 2 alternatives with honest confidence scores
+- Common Israeli garden/houseplants: Bougainvillea, Plumbago, Lantana, Jasmine, Ficus, Citrus, Olive, Rosemary, Geranium — check these first
 
 JSON structure:
 {
