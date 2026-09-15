@@ -48,6 +48,18 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       return res.status(500).json({ error: 'מפתח API של Anthropic לא הוגדר. יש לעדכן את קובץ .env' });
     }
 
+    // Use SSE to keep connection alive on Render free tier (30s timeout)
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    // Send heartbeats every 10s to prevent timeout
+    const heartbeat = setInterval(() => {
+      res.write('event: heartbeat\ndata: {}\n\n');
+    }, 10000);
+
     const compressed = await compressImage(req.file.buffer, req.file.mimetype);
     const imageBase64 = compressed.buffer.toString('base64');
 
@@ -61,25 +73,33 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     const [claudeResult, plantNetResult] = await Promise.allSettled(tasks);
 
+    clearInterval(heartbeat);
+
     const claude = claudeResult.status === 'fulfilled' ? claudeResult.value : null;
     const plantNet = plantNetResult.status === 'fulfilled' ? plantNetResult.value : null;
 
     if (!claude) {
       const errMsg = claudeResult.reason?.message || 'שגיאה בניתוח התמונה';
-      return res.status(500).json({ error: errMsg });
+      res.write(`event: error\ndata: ${JSON.stringify({ error: errMsg })}\n\n`);
+      res.end();
+      return;
     }
 
     const crossReference = buildCrossReference(claude, plantNet);
 
-    res.json({
+    const result = {
       analysis: claude,
       plantNet,
       crossReference,
       timestamp: new Date().toISOString()
-    });
+    };
+
+    res.write(`event: result\ndata: ${JSON.stringify(result)}\n\n`);
+    res.end();
   } catch (error) {
     console.error('Analysis error:', error);
-    res.status(500).json({ error: 'שגיאה בניתוח התמונה. נסו שוב.' });
+    res.write(`event: error\ndata: ${JSON.stringify({ error: 'שגיאה בניתוח התמונה. נסו שוב.' })}\n\n`);
+    res.end();
   }
 });
 

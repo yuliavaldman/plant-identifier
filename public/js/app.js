@@ -173,12 +173,30 @@ document.addEventListener('DOMContentLoaded', () => {
       clearInterval(stepInterval);
       clearInterval(timerInterval);
 
-      if (!response.ok) {
+      // Non-SSE error responses (multer, missing file, etc.)
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || contentType.includes('application/json')) {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'שגיאה בניתוח התמונה');
       }
 
-      const data = await response.json();
+      // Parse SSE response
+      const text = await response.text();
+      let data = null;
+      let errorMsg = null;
+
+      for (const block of text.split('\n\n')) {
+        if (block.startsWith('event: result')) {
+          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+          if (dataLine) data = JSON.parse(dataLine.slice(6));
+        } else if (block.startsWith('event: error')) {
+          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+          if (dataLine) errorMsg = JSON.parse(dataLine.slice(6)).error;
+        }
+      }
+
+      if (errorMsg) throw new Error(errorMsg);
+      if (!data) throw new Error('לא התקבלה תשובה מהשרת');
 
       if (data.analysis && !data.analysis.isPlant) {
         showError(
