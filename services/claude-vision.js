@@ -90,34 +90,44 @@ JSON for "success":
   "funFacts": ["..."]
 }`;
 
-// ── Optimized full prompt (same schema, ~54% smaller, benchmarked identical quality) ──
-const OPTIMIZED_ANALYSIS_PROMPT = `Botanist assistant. Return ONLY valid JSON. All text Hebrew. Be concise.
+// ── Compact optimized prompt (same schema, enforced brevity, benchmarked 43% faster) ──
+const OPTIMIZED_ANALYSIS_PROMPT = `Botanist. Return ONLY valid JSON. Hebrew. Maximum brevity.
 
 CLASSIFY:
 - No plant → {"status":"not_a_plant","message":"..."}
 - Bad image → {"status":"insufficient_image","reason":"...","suggestedPhotos":["..."]}
-- Plant visible → "success", full analysis below.
+- Plant visible → "success" below.
 
-For not_a_plant/insufficient_image return ONLY those fields.
+not_a_plant/insufficient_image: ONLY those fields.
 
 RULES:
-- Never invent species/disease/pest without visible evidence.
-- Separate observation (visible) from assessment (interpretation) from suspicion.
-- alternativeMatches: only genuinely plausible. Empty [] if clear ID.
-- If 2+ species plausible, similar confidence (within 0.1). Unsure → genus level, confidence<0.7.
-- observations: ONLY what is visible, no interpretation.
-- issues: diagnostic interpretation of observations.
-- Each issue needs: category, likelihood, visibleEvidence, missingEvidence, alternativeExplanations, questionsToConfirm.
+- Never invent species/disease/pest. Evidence only.
+- alternativeMatches: only genuinely plausible, else [].
+- 2+ plausible species → similar confidence. Unsure → genus, confidence<0.7.
+- observations: visible facts only, max 3 short items.
+- issues: diagnosis from observations.
 - Categories: pest|fungal|bacterial|viral|nutritional|watering|light|temperature|mechanical|unknown
-- Low likelihood → only safe reversible actions. Never pesticides/fungicides/drastic pruning without high confidence.
-- Medium → cautious advice, confirm before aggressive action.
-- Toxicity verification: "verified"|"uncertain"|"unknown". confidence<0.7 → must be uncertain/unknown.
-- followUpQuestions: max 4, structured {id,question,type,options}. Only if answer would change diagnosis.
-- Types: yes_no, single_choice (2-5 options + "לא יודע/ת"), short_text.
-- Common Israeli plants: Bougainvillea, Plumbago, Lantana, Jasmine, Ficus, Citrus, Olive, Rosemary, Geranium.
+- Low likelihood → safe reversible actions only.
+- Toxicity verification: "verified"|"uncertain"|"unknown". confidence<0.7 → uncertain/unknown.
+- followUpQuestions: max 3, only if answer changes diagnosis. {id,question,type,options}.
 
-JSON for "success":
-{"status":"success","imageQuality":{"overall":"good|acceptable|poor","issues":[]},"observations":["..."],"identification":{"commonNameHe":"..","commonNameEn":"..","scientificName":"..","family":"..","confidence":0.85,"description":"1-2 sentences","uncertaintyNote":"if relevant","alternativeMatches":[{"scientificName":"..","commonNameHe":"..","commonNameEn":"..","confidence":0.5,"differentiatingFeature":".."}]},"healthAssessment":{"overallHealth":"excellent|good|fair|poor|critical","healthScore":80,"summary":".."},"issues":[{"name":"..","category":"..","likelihood":"high|medium|low","severity":"low|medium|high|urgent","visibleEvidence":[".."],"missingEvidence":[".."],"alternativeExplanations":[".."],"questionsToConfirm":[".."],"recommendedNextStep":"..","treatment":".."}],"followUpQuestions":[],"careRecommendations":{"water":"..","light":"..","soil":"..","temperature":"..","fertilizer":"..","pruning":".."},"toxicity":{"verification":"..","forPets":{"toxic":false,"details":".."},"forHumans":{"toxic":false,"details":".."}},"seasonalCare":{"spring":"..","summer":"..","autumn":"..","winter":".."},"funFacts":["..."]}`;
+BREVITY RULES:
+- description: 1 sentence max.
+- observations: max 3 items, each under 10 words.
+- visibleEvidence: max 3 short items.
+- missingEvidence: max 2 items.
+- alternativeExplanations: max 2 items.
+- questionsToConfirm: max 2 items.
+- treatment: 1-2 actionable sentences, no prose.
+- recommendedNextStep: 1 short sentence.
+- careRecommendations: each value 1 sentence max.
+- seasonalCare: each season 1 sentence max.
+- funFacts: max 1 item, 1 sentence.
+- summary: 1 sentence.
+- No repeated caveats. No filler text.
+
+JSON "success":
+{"status":"success","imageQuality":{"overall":"good|acceptable|poor","issues":[]},"observations":["..."],"identification":{"commonNameHe":"..","commonNameEn":"..","scientificName":"..","family":"..","confidence":0.85,"description":"..","uncertaintyNote":"if relevant","alternativeMatches":[{"scientificName":"..","commonNameHe":"..","commonNameEn":"..","confidence":0.5,"differentiatingFeature":".."}]},"healthAssessment":{"overallHealth":"excellent|good|fair|poor|critical","healthScore":80,"summary":".."},"issues":[{"name":"..","category":"..","likelihood":"..","severity":"..","visibleEvidence":[".."],"missingEvidence":[".."],"alternativeExplanations":[".."],"questionsToConfirm":[".."],"recommendedNextStep":"..","treatment":".."}],"followUpQuestions":[],"careRecommendations":{"water":"..","light":"..","soil":"..","temperature":"..","fertilizer":"..","pruning":".."},"toxicity":{"verification":"..","forPets":{"toxic":false,"details":".."},"forHumans":{"toxic":false,"details":".."}},"seasonalCare":{"spring":"..","summer":"..","autumn":"..","winter":".."},"funFacts":["..."]}`;
 
 // ── Stage 1 prompt: fast core result (no care/seasonal/funFacts, concise toxicity) ──
 const STAGE1_PROMPT = `Botanist assistant. Return ONLY valid JSON. All text Hebrew. Be concise.
@@ -208,8 +218,8 @@ function toMediaType(mimetype) {
 async function analyzeWithClaude(imageBase64, mimetype, options = {}) {
   const mediaType = toMediaType(mimetype);
   const prompt = getAnalysisPrompt(options);
-  const maxTokens = options.stage1 ? 3000 : (options.optimized ? 4000 : 6000);
-  const promptLabel = options.stage1 ? 'stage1' : (options.optimized ? 'optimized' : 'legacy');
+  const maxTokens = options.stage1 ? 3000 : (options.optimized ? 2200 : 6000);
+  const promptLabel = options.stage1 ? 'stage1' : (options.optimized ? 'compact' : 'legacy');
   const model = 'claude-sonnet-4-6';
 
   console.log(`[PROMPT] chars=${prompt.length} maxTokens=${maxTokens}`);
