@@ -31,16 +31,9 @@
       <p class="hero-headline">מעלים. מזהים. מבינים מה הצמח צריך.</p>
       <p class="hero-sub">העלו תמונה של הצמח וקבלו זיהוי, אבחון בעיות והמלצות טיפול.</p>
       <div class="hero-cta">
-        <label class="btn btn-hero-primary native-only" for="cameraInput">
+        <label class="btn btn-hero-primary" for="fileInput">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           העלאת תמונה
-        </label>
-        <label class="btn btn-hero-primary web-only" for="fileInput">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-          העלאת תמונה
-        </label>
-        <label class="btn btn-hero-secondary native-only" for="fileInput">
-          בחרו מהגלריה
         </label>
       </div>
     </div>
@@ -80,17 +73,9 @@
         <h2 class="native-only">בחרו תמונה מהגלריה</h2>
         <p class="web-only">או לחצו לבחירה מהמחשב</p>
         <p class="native-only">בחרו תמונה קיימת מהמכשיר</p>
-        <div class="upload-buttons web-only">
+        <div class="upload-buttons">
           <label class="btn btn-primary" for="fileInput">
             בחירת תמונה
-          </label>
-        </div>
-        <div class="upload-buttons native-only">
-          <label class="btn btn-primary" for="cameraInput">
-            העלאת תמונה
-          </label>
-          <label class="btn btn-secondary" for="fileInput">
-            בחר מהגלריה
           </label>
         </div>
         <input type="file" id="fileInput" accept="image/*" hidden>
@@ -304,6 +289,13 @@
           <h3>🔎 תוצאות הצילום הנוסף</h3>
         </div>
         <div class="card-body" id="followUpImageResultBody"></div>
+      </div>
+
+      <div class="enrichment-loading" id="enrichmentLoading" hidden>
+        <div class="enrichment-loading-inner">
+          <div class="enrichment-spinner"></div>
+          <span>טוען המלצות טיפול ומידע נוסף...</span>
+        </div>
       </div>
 
       <div class="result-card care-card" id="careCard">

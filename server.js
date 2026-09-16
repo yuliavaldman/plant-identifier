@@ -1,14 +1,23 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const sharp = require('sharp');
-const { analyzeWithClaude, refineWithClaude, analyzeFollowUpImage } = require('./services/claude-vision');
+const { analyzeWithClaude, enrichWithClaude, mergeStage2IntoResult, refineWithClaude, analyzeFollowUpImage } = require('./services/claude-vision');
 const { identifyWithPlantNet } = require('./services/plantnet');
 const { verifyWithWikipedia } = require('./services/wiki-verify');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ── Feature flags (defaults preserve pre-Phase-2 production behavior) ──
+// To enable experimental optimizations, set in Render environment variables:
+//   PLANTDOC_TWO_STAGE_ENABLED=true
+//   PLANTDOC_OPTIMIZED_PROMPT_ENABLED=true
+//   PLANTDOC_IMAGE_MAX_DIMENSION=1280
+const TWO_STAGE_ENABLED = (process.env.PLANTDOC_TWO_STAGE_ENABLED || 'false').toLowerCase() === 'true';
+const OPTIMIZED_PROMPT_ENABLED = (process.env.PLANTDOC_OPTIMIZED_PROMPT_ENABLED || 'false').toLowerCase() === 'true';
+const IMAGE_MAX_DIMENSION = parseInt(process.env.PLANTDOC_IMAGE_MAX_DIMENSION, 10) || 1500;
 
 app.set('trust proxy', 1);
 
@@ -93,18 +102,18 @@ async function validateImageBuffer(buffer) {
   }
 }
 
-async function compressImage(buffer, mimetype) {
+async function compressImage(buffer, mimetype, maxDim) {
+  maxDim = maxDim || IMAGE_MAX_DIMENSION;
   const image = sharp(buffer, { limitInputPixels: 40_000_000 });
   const metadata = await image.metadata();
 
   let processed = image;
-  const maxDim = 1500;
   if (metadata.width > maxDim || metadata.height > maxDim) {
     processed = processed.resize(maxDim, maxDim, { fit: 'inside', withoutEnlargement: true });
   }
 
   const output = await processed.jpeg({ quality: 80 }).toBuffer();
-  return { buffer: output, mimetype: 'image/jpeg' };
+  return { buffer: output, mimetype: 'image/jpeg', originalWidth: metadata.width, originalHeight: metadata.height };
 }
 
 app.post('/api/analyze', (req, res, next) => {
@@ -138,6 +147,8 @@ app.post('/api/analyze', (req, res, next) => {
     const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     jobs.set(jobId, { status: 'processing', created: Date.now() });
 
+    console.log(`[${jobId}] [PERF] request-received: ${new Date().toISOString()}`);
+
     res.json({ jobId });
 
     activeJobs++;
@@ -155,16 +166,109 @@ app.post('/api/analyze', (req, res, next) => {
   }
 });
 
-async function processImage(jobId, fileBuffer, fileMimetype) {
-  const startTime = Date.now();
-  try {
-    console.log(`[${jobId}] Starting image processing...`);
-    const compressed = await compressImage(fileBuffer, fileMimetype);
-    console.log(`[${jobId}] Image compressed to ${Math.round(compressed.buffer.length / 1024)}KB`);
-    const imageBase64 = compressed.buffer.toString('base64');
+// Visual-only cross-reference (PlantNet only, no Wikipedia) — fast path for Stage 1
+function buildVisualCrossReference(jobId, claude, plantNet, plantNetAvailable, perf) {
+  const wasIdentified = (claude?.status === 'success' || claude?.status === 'identified') && claude?.identification;
+  if (!wasIdentified) {
+    return { available: false, message: 'הצלבה עם מקורות חיצוניים לא זמינה', sources: [] };
+  }
 
-    // Claude API call with 180s timeout safety net
-    const claudePromise = analyzeWithClaude(imageBase64, compressed.mimetype);
+  maybePromoteAlternative(claude, plantNet);
+
+  const tCross = performance.now();
+  const crossReference = buildCrossReference(claude, plantNet, null, null, plantNetAvailable);
+  claude.identification.confidenceLevel = confidenceLevelText(crossReference.combinedConfidence || claude.identification.confidence);
+  perf.crossReference = performance.now() - tCross;
+
+  applyToxicityVerification(claude, crossReference);
+  console.log(`[${jobId}] [PERF] cross-reference (visual only): ${perf.crossReference.toFixed(0)}ms`);
+  return crossReference;
+}
+
+// Full cross-reference including Wikipedia taxonomy verification
+function finalizeCrossReference(jobId, claude, plantNet, plantNetAvailable, perf) {
+  let crossReference = { available: false, message: 'הצלבה עם מקורות חיצוניים לא זמינה', sources: [] };
+  const wasIdentified = (claude?.status === 'success' || claude?.status === 'identified') && claude?.identification;
+
+  if (!wasIdentified) return crossReference;
+
+  maybePromoteAlternative(claude, plantNet);
+
+  const sciName = claude.identification.scientificName;
+  const altName = claude.identification.alternativeMatches?.[0]?.scientificName;
+
+  const wikiPromises = [];
+  wikiPromises.push(
+    Promise.race([
+      verifyWithWikipedia(sciName),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('wiki-timeout')), 4000))
+    ]).catch(() => null)
+  );
+  if (altName) {
+    wikiPromises.push(
+      Promise.race([
+        verifyWithWikipedia(altName),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('wiki-timeout')), 4000))
+      ]).catch(() => null)
+    );
+  } else {
+    wikiPromises.push(Promise.resolve(null));
+  }
+
+  const tWiki = performance.now();
+  return Promise.all(wikiPromises).then(([wikiResult, altWikiResult]) => {
+    perf.wiki = performance.now() - tWiki;
+    console.log(`[${jobId}] [PERF] wiki: ${(perf.wiki / 1000).toFixed(1)}s (primary: ${wikiResult?.verified ? 'verified' : 'not found'}, alt: ${altWikiResult?.verified ? 'verified' : altName ? 'not found' : 'skipped'})`);
+
+    maybePromoteByWiki(claude, altName);
+
+    const tCross = performance.now();
+    crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantNetAvailable);
+    claude.identification.confidenceLevel = confidenceLevelText(crossReference.combinedConfidence || claude.identification.confidence);
+    perf.crossReference = performance.now() - tCross;
+
+    applyToxicityVerification(claude, crossReference);
+    console.log(`[${jobId}] [PERF] cross-reference: ${perf.crossReference.toFixed(0)}ms`);
+    return crossReference;
+  });
+}
+
+async function processImage(jobId, fileBuffer, fileMimetype) {
+  const t0 = performance.now();
+  const perf = {};
+  const useTwoStage = TWO_STAGE_ENABLED;
+  const useOptimized = OPTIMIZED_PROMPT_ENABLED;
+
+  console.log(`[${jobId}] [CONFIG] twoStage=${useTwoStage} optimizedPrompt=${useOptimized} imageMaxDimension=${IMAGE_MAX_DIMENSION} model=claude-sonnet-4-6`);
+
+  try {
+    // --- Image validation + compression ---
+    const tImg = performance.now();
+    const compressed = await compressImage(fileBuffer, fileMimetype);
+    perf.imageProcessing = performance.now() - tImg;
+
+    const origW = compressed.originalWidth;
+    const origH = compressed.originalHeight;
+    const maxDim = IMAGE_MAX_DIMENSION;
+    let sentW = origW, sentH = origH;
+    if (origW > maxDim || origH > maxDim) {
+      const scale = Math.min(maxDim / origW, maxDim / origH);
+      sentW = Math.round(origW * scale);
+      sentH = Math.round(origH * scale);
+    }
+    const origSizeKB = Math.round(fileBuffer.length / 1024);
+    const compSizeKB = Math.round(compressed.buffer.length / 1024);
+    console.log(`[${jobId}] [IMAGE] width=${sentW} height=${sentH} compressedKB=${compSizeKB}`);
+    console.log(`[${jobId}] [PERF] image-processing: ${perf.imageProcessing.toFixed(0)}ms (${origW}x${origH} → ${sentW}x${sentH}, ${compSizeKB}KB JPEG, original ${origSizeKB}KB, maxDim=${maxDim})`);
+
+    const imageBase64 = compressed.buffer.toString('base64');
+    const payloadSizeKB = Math.round(imageBase64.length / 1024);
+
+    // --- Claude + PlantNet in parallel ---
+    const tApi = performance.now();
+
+    const claudeOptions = useTwoStage ? { stage1: true } : (useOptimized ? { optimized: true } : {});
+    const claudePromise = analyzeWithClaude(imageBase64, compressed.mimetype, claudeOptions);
     const claudeTimeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Claude API timeout')), 180000)
     );
@@ -177,11 +281,10 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
       tasks.push(Promise.resolve(null));
     }
 
-    console.log(`[${jobId}] Calling Claude API + PlantNet...`);
     const [claudeResult, plantNetResult] = await Promise.allSettled(tasks);
-
-    const claudeDuration = Date.now() - startTime;
-    console.log(`[${jobId}] Claude: ${claudeResult.status} (${claudeDuration}ms), PlantNet: ${plantNetResult.status}`);
+    perf.claudeStage1 = performance.now() - tApi;
+    console.log(`[${jobId}] [PERF] claude-${useTwoStage ? 'stage1' : 'full'}: ${(perf.claudeStage1 / 1000).toFixed(1)}s (model: claude-sonnet-4-6, payload: ~${payloadSizeKB}KB base64)`);
+    console.log(`[${jobId}] [PERF] plantnet: ${plantNetResult.status === 'fulfilled' ? 'ok' : 'failed'} (ran in parallel with Claude)`);
 
     const claude = claudeResult.status === 'fulfilled' ? claudeResult.value : null;
     const plantNet = plantNetResult.status === 'fulfilled' ? plantNetResult.value : null;
@@ -189,107 +292,168 @@ async function processImage(jobId, fileBuffer, fileMimetype) {
     if (!claude) {
       const errMsg = claudeResult.reason?.message || 'שגיאה בניתוח התמונה';
       console.error(`[${jobId}] Claude failed:`, errMsg);
+      perf.total = performance.now() - t0;
+      console.log(`[${jobId}] [PERF] total: ${(perf.total / 1000).toFixed(1)}s (failed at Claude)`);
       jobs.set(jobId, { status: 'error', error: errMsg, created: Date.now() });
       return;
     }
 
-    // "success" is the new status; "identified" kept for backward compat
     const wasIdentified = (claude?.status === 'success' || claude?.status === 'identified') && claude?.identification;
     console.log(`[${jobId}] Claude status: ${claude?.status}, identified: ${claude?.identification?.scientificName || 'n/a'}`);
 
-    let crossReference = { available: false, message: 'הצלבה עם מקורות חיצוניים לא זמינה', sources: [] };
-    let plantNetAvailable = true;
+    let plantNetAvailable = plantNetResult.status === 'fulfilled' && !!plantNet;
 
-    if (plantNetResult.status !== 'fulfilled' || !plantNet) {
-      plantNetAvailable = false;
+    // For non-success statuses (not_a_plant, insufficient_image), skip cross-reference & Stage 2
+    if (!wasIdentified) {
+      const crossReference = { available: false, message: 'הצלבה עם מקורות חיצוניים לא זמינה', sources: [] };
+      perf.total = performance.now() - t0;
+      console.log(`[${jobId}] [PERF] total: ${(perf.total / 1000).toFixed(1)}s (non-success: ${claude?.status})`);
+      jobs.set(jobId, {
+        status: 'done',
+        phase: 'complete',
+        created: Date.now(),
+        imageBase64,
+        imageMimetype: compressed.mimetype,
+        result: { analysis: claude, plantNet, crossReference, timestamp: new Date().toISOString() }
+      });
+      return;
     }
 
-    if (wasIdentified) {
-      maybePromoteAlternative(claude, plantNet);
-
-      const sciName = claude.identification.scientificName;
-      let wikiResult = null;
-      let altWikiResult = null;
-      try {
-        wikiResult = await Promise.race([
-          verifyWithWikipedia(sciName),
-          new Promise((_, reject) => setTimeout(() => reject(), 6000))
-        ]);
-        if (wikiResult && !wikiResult.verified && claude.identification.alternativeMatches?.length > 0) {
-          const altName = claude.identification.alternativeMatches[0].scientificName;
-          altWikiResult = await Promise.race([
-            verifyWithWikipedia(altName),
-            new Promise((_, reject) => setTimeout(() => reject(), 6000))
-          ]);
-          if (altWikiResult?.verified) {
-            maybePromoteByWiki(claude, altName);
-          }
-        }
-      } catch(e) {}
-
-      crossReference = buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantNetAvailable);
-      claude.identification.confidenceLevel = confidenceLevelText(crossReference.combinedConfidence || claude.identification.confidence);
-
-      // Override toxicity verification when identification is uncertain
-      applyToxicityVerification(claude, crossReference);
+    if (!useTwoStage) {
+      // --- Single-stage path: full cross-reference including wiki ---
+      const crossReference = await finalizeCrossReference(jobId, claude, plantNet, plantNetAvailable, perf);
+      perf.total = performance.now() - t0;
+      logPerfSummary(jobId, perf, 'single-stage');
+      jobs.set(jobId, {
+        status: 'done',
+        phase: 'complete',
+        created: Date.now(),
+        imageBase64,
+        imageMimetype: compressed.mimetype,
+        result: { analysis: claude, plantNet, crossReference, timestamp: new Date().toISOString() }
+      });
+      return;
     }
 
-    const totalDuration = Date.now() - startTime;
-    console.log(`[${jobId}] Done in ${totalDuration}ms, cross-ref match: ${crossReference.matchLevel || 'n/a'}`);
+    // --- Two-stage path: visual-only cross-reference (no wiki wait) ---
+    const visualCrossRef = buildVisualCrossReference(jobId, claude, plantNet, plantNetAvailable, perf);
+
+    perf.stage1Total = performance.now() - t0;
+    console.log(`[${jobId}] [PERF] stage1-total: ${(perf.stage1Total / 1000).toFixed(1)}s — publishing partial result (wiki deferred to Stage 2)`);
 
     jobs.set(jobId, {
-      status: 'done',
+      status: 'partial',
+      phase: 'stage1_complete',
       created: Date.now(),
       imageBase64,
       imageMimetype: compressed.mimetype,
-      result: {
-        analysis: claude,
-        plantNet,
-        crossReference,
-        timestamp: new Date().toISOString()
-      }
+      result: { analysis: claude, plantNet, crossReference: visualCrossRef, timestamp: new Date().toISOString() }
     });
+
+    // --- Stage 2: wiki + enrichment in parallel (no image re-send) ---
+    const tStage2 = performance.now();
+    const plantNetSpeciesDisagreement = visualCrossRef?.matchLevel === 'genus' || (visualCrossRef?.matchLevel === 'none' && plantNetAvailable);
+    try {
+      const [enrichmentResult, fullCrossRef] = await Promise.allSettled([
+        Promise.race([
+          enrichWithClaude(claude, { plantNetSpeciesDisagreement }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Stage 2 enrichment timeout')), 60000))
+        ]),
+        finalizeCrossReference(jobId, claude, plantNet, plantNetAvailable, perf)
+      ]);
+
+      perf.stage2 = performance.now() - tStage2;
+      console.log(`[${jobId}] [PERF] stage2 (enrichment + wiki): ${(perf.stage2 / 1000).toFixed(1)}s`);
+
+      const crossReference = fullCrossRef.status === 'fulfilled' ? fullCrossRef.value : visualCrossRef;
+      let mergedAnalysis = claude;
+      if (enrichmentResult.status === 'fulfilled') {
+        mergedAnalysis = mergeStage2IntoResult(claude, enrichmentResult.value);
+      } else {
+        console.error(`[${jobId}] Stage 2 enrichment failed:`, enrichmentResult.reason?.message);
+      }
+
+      perf.total = performance.now() - t0;
+      logPerfSummary(jobId, perf, 'two-stage');
+
+      const job = jobs.get(jobId);
+      if (job) {
+        jobs.set(jobId, {
+          status: 'done',
+          phase: enrichmentResult.status === 'fulfilled' ? 'stage2_complete' : 'stage2_failed',
+          created: Date.now(),
+          imageBase64,
+          imageMimetype: compressed.mimetype,
+          result: { analysis: mergedAnalysis, plantNet, crossReference, timestamp: new Date().toISOString() }
+        });
+      }
+    } catch (stage2Err) {
+      perf.stage2 = performance.now() - tStage2;
+      perf.total = performance.now() - t0;
+      console.error(`[${jobId}] Stage 2 failed after ${(perf.stage2 / 1000).toFixed(1)}s:`, stage2Err.message);
+      logPerfSummary(jobId, perf, 'two-stage (stage2 failed)');
+
+      // Stage 2 failure: promote partial to done — user keeps Stage 1 result
+      const job = jobs.get(jobId);
+      if (job && job.status === 'partial') {
+        jobs.set(jobId, {
+          ...job,
+          status: 'done',
+          phase: 'stage2_failed',
+          created: Date.now()
+        });
+      }
+    }
   } catch (error) {
-    const totalDuration = Date.now() - startTime;
-    console.error(`[${jobId}] Processing error after ${totalDuration}ms:`, error.message || error);
+    perf.total = performance.now() - t0;
+    console.error(`[${jobId}] Processing error after ${(perf.total / 1000).toFixed(1)}s:`, error.message || error);
     jobs.set(jobId, { status: 'error', error: 'שגיאה בניתוח התמונה. נסו שוב.', created: Date.now() });
   }
+}
+
+function logPerfSummary(jobId, perf, mode) {
+  console.log(`[${jobId}] [PERF] === SUMMARY (${mode}) ===`);
+  console.log(`[${jobId}] [PERF] image-processing: ${perf.imageProcessing.toFixed(0)}ms`);
+  console.log(`[${jobId}] [PERF] claude-stage1: ${(perf.claudeStage1 / 1000).toFixed(1)}s`);
+  if (perf.stage2) console.log(`[${jobId}] [PERF] claude-stage2: ${(perf.stage2 / 1000).toFixed(1)}s`);
+  console.log(`[${jobId}] [PERF] wiki: ${perf.wiki ? (perf.wiki / 1000).toFixed(1) + 's' : 'skipped'}`);
+  console.log(`[${jobId}] [PERF] cross-reference: ${perf.crossReference ? perf.crossReference.toFixed(0) + 'ms' : 'skipped'}`);
+  if (perf.stage1Total) console.log(`[${jobId}] [PERF] stage1-total: ${(perf.stage1Total / 1000).toFixed(1)}s`);
+  console.log(`[${jobId}] [PERF] total: ${(perf.total / 1000).toFixed(1)}s`);
 }
 
 function maybePromoteAlternative(claude, plantNet) {
   if (!plantNet?.results?.length || !claude?.identification?.alternativeMatches?.length) return;
 
   const primaryName = claude.identification.scientificName?.toLowerCase().trim() || '';
-  const primaryGenus = primaryName.split(' ')[0];
 
+  // If PlantNet top result already matches primary at species level, no promotion needed
   const pnTopName = plantNet.results[0]?.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
-  const pnTopGenus = pnTopName.split(' ')[0];
+  if (pnTopName === primaryName) return;
 
-  if (pnTopName === primaryName || pnTopGenus === primaryGenus) return;
-
+  // Only promote on EXACT SPECIES match — genus-only agreement is NOT evidence
   for (let i = 0; i < claude.identification.alternativeMatches.length; i++) {
     const alt = claude.identification.alternativeMatches[i];
     const altName = alt.scientificName?.toLowerCase().trim() || '';
-    const altGenus = altName.split(' ')[0];
 
     for (const pnResult of plantNet.results.slice(0, 3)) {
       const pnName = pnResult.species?.scientificNameWithoutAuthor?.toLowerCase().trim() || '';
-      const pnGenus = pnName.split(' ')[0];
 
-      if (pnName === altName || pnGenus === altGenus) {
-        console.log(`Promoting alternative "${alt.scientificName}" (matched PlantNet) over primary "${claude.identification.scientificName}"`);
+      if (pnName === altName) {
+        console.log(`Promoting alternative "${alt.scientificName}" (exact species match with PlantNet) over primary "${claude.identification.scientificName}"`);
         const oldPrimary = { ...claude.identification };
         delete oldPrimary.alternativeMatches;
         claude.identification.commonNameHe = alt.commonNameHe || oldPrimary.commonNameHe;
         claude.identification.commonNameEn = alt.commonNameEn || oldPrimary.commonNameEn;
         claude.identification.scientificName = alt.scientificName;
-        claude.identification.confidence = Math.max(alt.confidence || 0, oldPrimary.confidence || 0);
+        // Preserve the alternative's own confidence — never inherit higher from rejected primary
+        claude.identification.confidence = alt.confidence || 0;
         claude.identification.description = alt.description || oldPrimary.description;
         claude.identification.alternativeMatches[i] = {
           scientificName: oldPrimary.scientificName,
           commonNameHe: oldPrimary.commonNameHe,
           commonNameEn: oldPrimary.commonNameEn,
-          confidence: oldPrimary.confidence * 0.8,
+          confidence: oldPrimary.confidence || 0,
           differentiatingFeature: alt.differentiatingFeature || ''
         };
         return;
@@ -298,29 +462,12 @@ function maybePromoteAlternative(claude, plantNet) {
   }
 }
 
+// Wikipedia/Wikidata verifies taxonomy (taxon name existence), NOT visual identification.
+// It must NEVER promote an alternative identification over Claude's primary.
+// This function is intentionally disabled — kept as a no-op for documentation.
 function maybePromoteByWiki(claude, verifiedAltName) {
-  if (!claude?.identification?.alternativeMatches?.length) return;
-  const altIdx = claude.identification.alternativeMatches.findIndex(
-    a => a.scientificName?.toLowerCase().trim() === verifiedAltName?.toLowerCase().trim()
-  );
-  if (altIdx === -1) return;
-
-  const alt = claude.identification.alternativeMatches[altIdx];
-  console.log(`Promoting alternative "${alt.scientificName}" (verified by Wikipedia) over primary "${claude.identification.scientificName}"`);
-
-  const oldPrimary = { ...claude.identification };
-  delete oldPrimary.alternativeMatches;
-  claude.identification.commonNameHe = alt.commonNameHe || oldPrimary.commonNameHe;
-  claude.identification.commonNameEn = alt.commonNameEn || oldPrimary.commonNameEn;
-  claude.identification.scientificName = alt.scientificName;
-  claude.identification.confidence = Math.max(alt.confidence || 0, oldPrimary.confidence || 0);
-  claude.identification.alternativeMatches[altIdx] = {
-    scientificName: oldPrimary.scientificName,
-    commonNameHe: oldPrimary.commonNameHe,
-    commonNameEn: oldPrimary.commonNameEn,
-    confidence: oldPrimary.confidence * 0.8,
-    differentiatingFeature: alt.differentiatingFeature || ''
-  };
+  // Disabled: Wikipedia verification is not visual evidence.
+  // See PERFORMANCE_PHASE2_CHANGELOG.md for rationale.
 }
 
 app.get('/api/result/:jobId', (req, res) => {
@@ -335,11 +482,18 @@ app.get('/api/result/:jobId', (req, res) => {
     jobs.delete(req.params.jobId);
     return res.json({ status: 'error', error: job.error });
   }
+  if (job.status === 'partial') {
+    const result = job.result;
+    const hasFollowUp = Array.isArray(result.analysis?.followUpQuestions) && result.analysis.followUpQuestions.length > 0;
+    const needsPhotos = !!(result.analysis?.needsMorePhotos || result.analysis?.suggestedPhotos?.length);
+    const canFollowUpImage = needsPhotos && !job.followUpImageDone;
+    return res.json({ status: 'partial', phase: job.phase || 'stage1_complete', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, canFollowUpImage, ...result });
+  }
   const result = job.result;
   const hasFollowUp = Array.isArray(result.analysis?.followUpQuestions) && result.analysis.followUpQuestions.length > 0;
   const needsPhotos = !!(result.analysis?.needsMorePhotos || result.analysis?.suggestedPhotos?.length);
   const canFollowUpImage = needsPhotos && !job.followUpImageDone;
-  res.json({ status: 'done', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, canFollowUpImage, ...result });
+  res.json({ status: 'done', phase: job.phase || 'complete', jobId: req.params.jobId, canRefine: hasFollowUp && !job.refined, canFollowUpImage, ...result });
 });
 
 function confidenceLevelText(conf) {
@@ -399,13 +553,16 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantN
   }
 
   if (wikiResult) {
+    // Wikipedia verifies taxonomy (taxon existence), NOT visual identification.
+    // It must NEVER count as "agrees" for confidence boosting.
     if (wikiResult.verified) {
       sources.push({
         name: 'ויקיפדיה',
         topResult: wikiResult.taxonName || wikiResult.englishName,
         hebrewName: wikiResult.hebrewName,
         score: 1,
-        agrees: true,
+        agrees: false,
+        isTaxonomyOnly: true,
         note: 'השם המדעי אומת כ-taxon תקין בוויקיפדיה (אימות קיום השם, לא זיהוי התמונה).'
       });
     } else if (altWikiResult?.verified) {
@@ -416,7 +573,8 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantN
         hebrewName: altWikiResult.hebrewName,
         score: 0.7,
         agrees: false,
-        note: `השם "${claudeName}" לא נמצא. ייתכן ש-"${altName?.scientificName}" מדויק יותר.`
+        isTaxonomyOnly: true,
+        note: `השם "${claudeName}" לא נמצא בוויקיפדיה. "${altName?.scientificName || ''}" נמצא.`
       });
     } else {
       sources.push({
@@ -424,13 +582,16 @@ function buildCrossReference(claude, plantNet, wikiResult, altWikiResult, plantN
         topResult: null,
         score: 0,
         agrees: false,
+        isTaxonomyOnly: true,
         note: 'השם המדעי לא נמצא בוויקיפדיה'
       });
     }
   }
 
-  const agreeingSources = sources.filter(s => s.agrees).length;
-  const totalSources = sources.filter(s => s.matchLevel !== 'unavailable').length;
+  // Only count visual identification sources (not taxonomy-only like Wikipedia)
+  const visualSources = sources.filter(s => !s.isTaxonomyOnly && s.matchLevel !== 'unavailable');
+  const agreeingSources = visualSources.filter(s => s.agrees).length;
+  const totalSources = visualSources.length;
 
   let combinedConfidence;
   let agreementMessage;

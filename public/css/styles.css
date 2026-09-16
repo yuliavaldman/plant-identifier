@@ -961,6 +961,7 @@ body {
 .follow-up-text-input:focus { outline: none; border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(82, 183, 136, 0.15); }
 .refine-btn { margin-top: 14px; width: 100%; font-size: 1rem; padding: 12px 20px; }
 .refine-loading { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; padding: 12px; color: var(--text-light); font-size: 0.92rem; }
+.refine-loading[hidden] { display: none; }
 .refine-spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
 
 /* Refinement result card */
@@ -1001,6 +1002,14 @@ body {
 .followup-submit-btn { flex: 1; font-size: 1rem; padding: 12px 20px; }
 .followup-clear-btn { padding: 12px 16px; }
 .followup-image-loading { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; padding: 12px; color: var(--text-light); font-size: 0.92rem; }
+.followup-image-loading[hidden] { display: none; }
+
+/* Stage 2 enrichment loading */
+.enrichment-loading { padding: 16px; text-align: center; }
+.enrichment-loading[hidden] { display: none; }
+.enrichment-loading-inner { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; background: rgba(82, 183, 136, 0.06); border: 1px solid rgba(82, 183, 136, 0.2); border-radius: var(--radius-sm); color: var(--text-light); font-size: 0.92rem; }
+.enrichment-spinner { width: 18px; height: 18px; border: 2px solid rgba(82, 183, 136, 0.2); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Follow-up image result card */
 .followup-image-result-card { border: 2px solid var(--info); background: linear-gradient(135deg, rgba(21, 101, 192, 0.03) 0%, rgba(82, 183, 136, 0.04) 100%); }

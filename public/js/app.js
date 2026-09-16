@@ -254,9 +254,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (uploadError) throw new Error(uploadError);
       if (!jobId) throw new Error('שגיאה בתחילת הניתוח');
 
+      let stage1Rendered = false;
       const data = await new Promise((resolve, reject) => {
         let attempts = 0;
-        const maxAttempts = 60;
+        const maxAttempts = 120;
 
         const poll = setInterval(async () => {
           attempts++;
@@ -264,7 +265,27 @@ document.addEventListener('DOMContentLoaded', () => {
             const pollRes = await fetch(PlantDocConfig.API_BASE_URL + '/api/result/' + jobId);
             const result = await pollRes.json();
 
-            if (result.status === 'done') {
+            if (result.status === 'partial' && !stage1Rendered) {
+              stage1Rendered = true;
+              clearInterval(stepInterval);
+              clearInterval(timerInterval);
+              if (progressFill) progressFill.style.width = '90%';
+
+              const s = result.analysis?.status;
+              if (s === 'not_a_plant' || s === 'insufficient_image' || (result.analysis && result.analysis.isPlant === false)) {
+                clearInterval(poll);
+                resolve(result);
+                return;
+              }
+
+              currentJobId = result.jobId || null;
+              currentAnalysisData = result;
+              renderResults(result);
+              showSection('results');
+
+              const enrichEl = document.getElementById('enrichmentLoading');
+              if (enrichEl) enrichEl.hidden = false;
+            } else if (result.status === 'done') {
               clearInterval(poll);
               resolve(result);
             } else if (result.status === 'error') {
@@ -275,20 +296,31 @@ document.addEventListener('DOMContentLoaded', () => {
               reject(new Error('הניתוח לא נמצא'));
             } else if (attempts >= maxAttempts) {
               clearInterval(poll);
-              reject(new Error('הניתוח לקח יותר מדי זמן. נסו שוב.'));
+              if (stage1Rendered) {
+                resolve(currentAnalysisData);
+              } else {
+                reject(new Error('הניתוח לקח יותר מדי זמן. נסו שוב.'));
+              }
             }
           } catch(e) {
             if (attempts >= maxAttempts) {
               clearInterval(poll);
-              reject(e);
+              if (stage1Rendered) {
+                resolve(currentAnalysisData);
+              } else {
+                reject(e);
+              }
             }
           }
-        }, 3000);
+        }, 1500);
       });
 
       clearInterval(stepInterval);
       clearInterval(timerInterval);
       if (progressFill) progressFill.style.width = '100%';
+
+      const enrichEl = document.getElementById('enrichmentLoading');
+      if (enrichEl) enrichEl.hidden = true;
 
       const status = data.analysis?.status;
 
@@ -795,7 +827,11 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    if (btn) btn.hidden = true;
+    if (btn) {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.hidden = true;
+    }
     if (loading) loading.hidden = false;
 
     try {
@@ -820,10 +856,13 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (error) {
       alert(error.message);
-      if (btn) btn.hidden = false;
+      if (btn) {
+        btn.hidden = false;
+        btn.disabled = false;
+      }
+    } finally {
+      if (loading) loading.hidden = true;
     }
-
-    if (loading) loading.hidden = true;
   }
 
   function renderRefinementResult(ref) {
@@ -1016,7 +1055,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const clearBtn = document.getElementById('followUpClearBtn');
     const loading = document.getElementById('followUpImageLoading');
 
-    if (submitBtn) submitBtn.hidden = true;
+    if (submitBtn) {
+      if (submitBtn.disabled) return;
+      submitBtn.disabled = true;
+      submitBtn.hidden = true;
+    }
     if (clearBtn) clearBtn.hidden = true;
     if (loading) loading.hidden = false;
 
@@ -1043,11 +1086,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (error) {
       alert(error.message);
-      if (submitBtn) submitBtn.hidden = false;
+      if (submitBtn) {
+        submitBtn.hidden = false;
+        submitBtn.disabled = false;
+      }
       if (clearBtn) clearBtn.hidden = false;
+    } finally {
+      if (loading) loading.hidden = true;
     }
-
-    if (loading) loading.hidden = true;
   }
 
   function renderFollowUpImageResult(result) {
@@ -1218,11 +1264,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const petsIcon = verification !== 'verified' ? '🐾❓' : (pets.toxic ? '🐾⚠️' : '🐾✅');
     const humansIcon = verification !== 'verified' ? '👤❓' : (humans.toxic ? '👤⚠️' : '👤✅');
 
+    function toxLabel(entry, verified) {
+      if (entry.details) return entry.details;
+      if (verified) return entry.toxic ? 'רעיל' : 'לא רעיל';
+      return 'לא אומת';
+    }
+    const isVerified = verification === 'verified';
+
     html += `
       <div class="toxicity-item ${petsClass}">
         <div class="toxicity-icon">${petsIcon}</div>
         <div class="toxicity-label">חיות מחמד</div>
-        <div class="toxicity-details">${esc(pets.details || (pets.toxic ? 'רעיל' : 'לא רעיל'))}</div>
+        <div class="toxicity-details">${esc(toxLabel(pets, isVerified))}</div>
         ${pets.symptoms ? `<div class="toxicity-details" style="margin-top:4px;font-size:0.8rem">${esc(pets.symptoms)}</div>` : ''}
       </div>`;
 
@@ -1230,7 +1283,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="toxicity-item ${humansClass}">
         <div class="toxicity-icon">${humansIcon}</div>
         <div class="toxicity-label">בני אדם</div>
-        <div class="toxicity-details">${esc(humans.details || (humans.toxic ? 'רעיל' : 'לא רעיל'))}</div>
+        <div class="toxicity-details">${esc(toxLabel(humans, isVerified))}</div>
         ${humans.symptoms ? `<div class="toxicity-details" style="margin-top:4px;font-size:0.8rem">${esc(humans.symptoms)}</div>` : ''}
       </div>`;
 

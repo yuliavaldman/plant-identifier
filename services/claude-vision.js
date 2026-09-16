@@ -4,7 +4,8 @@ const client = new Anthropic({
   timeout: 180000,
 });
 
-const ANALYSIS_PROMPT = `You are a careful botanist and plant-health assistant. Analyze this image and return ONLY valid JSON (no markdown fences). All text values in Hebrew. Be concise.
+// ── Legacy full prompt (preserved for fallback) ────────────────────────────
+const LEGACY_ANALYSIS_PROMPT = `You are a careful botanist and plant-health assistant. Analyze this image and return ONLY valid JSON (no markdown fences). All text values in Hebrew. Be concise.
 
 STEP 1 — CLASSIFY THE IMAGE:
 - No plant visible → {"status":"not_a_plant","message":"הסבר קצר בעברית"}
@@ -89,15 +90,134 @@ JSON for "success":
   "funFacts": ["..."]
 }`;
 
-async function analyzeWithClaude(imageBase64, mimetype) {
-  const mediaType = mimetype === 'image/png' ? 'image/png'
-    : mimetype === 'image/webp' ? 'image/webp'
-    : mimetype === 'image/gif' ? 'image/gif'
-    : 'image/jpeg';
+// ── Optimized full prompt (same schema, ~54% smaller, benchmarked identical quality) ──
+const OPTIMIZED_ANALYSIS_PROMPT = `Botanist assistant. Return ONLY valid JSON. All text Hebrew. Be concise.
+
+CLASSIFY:
+- No plant → {"status":"not_a_plant","message":"..."}
+- Bad image → {"status":"insufficient_image","reason":"...","suggestedPhotos":["..."]}
+- Plant visible → "success", full analysis below.
+
+For not_a_plant/insufficient_image return ONLY those fields.
+
+RULES:
+- Never invent species/disease/pest without visible evidence.
+- Separate observation (visible) from assessment (interpretation) from suspicion.
+- alternativeMatches: only genuinely plausible. Empty [] if clear ID.
+- If 2+ species plausible, similar confidence (within 0.1). Unsure → genus level, confidence<0.7.
+- observations: ONLY what is visible, no interpretation.
+- issues: diagnostic interpretation of observations.
+- Each issue needs: category, likelihood, visibleEvidence, missingEvidence, alternativeExplanations, questionsToConfirm.
+- Categories: pest|fungal|bacterial|viral|nutritional|watering|light|temperature|mechanical|unknown
+- Low likelihood → only safe reversible actions. Never pesticides/fungicides/drastic pruning without high confidence.
+- Medium → cautious advice, confirm before aggressive action.
+- Toxicity verification: "verified"|"uncertain"|"unknown". confidence<0.7 → must be uncertain/unknown.
+- followUpQuestions: max 4, structured {id,question,type,options}. Only if answer would change diagnosis.
+- Types: yes_no, single_choice (2-5 options + "לא יודע/ת"), short_text.
+- Common Israeli plants: Bougainvillea, Plumbago, Lantana, Jasmine, Ficus, Citrus, Olive, Rosemary, Geranium.
+
+JSON for "success":
+{"status":"success","imageQuality":{"overall":"good|acceptable|poor","issues":[]},"observations":["..."],"identification":{"commonNameHe":"..","commonNameEn":"..","scientificName":"..","family":"..","confidence":0.85,"description":"1-2 sentences","uncertaintyNote":"if relevant","alternativeMatches":[{"scientificName":"..","commonNameHe":"..","commonNameEn":"..","confidence":0.5,"differentiatingFeature":".."}]},"healthAssessment":{"overallHealth":"excellent|good|fair|poor|critical","healthScore":80,"summary":".."},"issues":[{"name":"..","category":"..","likelihood":"high|medium|low","severity":"low|medium|high|urgent","visibleEvidence":[".."],"missingEvidence":[".."],"alternativeExplanations":[".."],"questionsToConfirm":[".."],"recommendedNextStep":"..","treatment":".."}],"followUpQuestions":[],"careRecommendations":{"water":"..","light":"..","soil":"..","temperature":"..","fertilizer":"..","pruning":".."},"toxicity":{"verification":"..","forPets":{"toxic":false,"details":".."},"forHumans":{"toxic":false,"details":".."}},"seasonalCare":{"spring":"..","summer":"..","autumn":"..","winter":".."},"funFacts":["..."]}`;
+
+// ── Stage 1 prompt: fast core result (no care/seasonal/funFacts, concise toxicity) ──
+const STAGE1_PROMPT = `Botanist assistant. Return ONLY valid JSON. All text Hebrew. Be concise.
+
+CLASSIFY:
+- No plant → {"status":"not_a_plant","message":"..."}
+- Bad image → {"status":"insufficient_image","reason":"...","suggestedPhotos":["..."]}
+- Plant visible → "success", analysis below.
+
+For not_a_plant/insufficient_image return ONLY those fields.
+
+RULES:
+- Never invent species/disease/pest without visible evidence.
+- Separate observation (visible) from assessment (interpretation) from suspicion.
+- alternativeMatches: only genuinely plausible. Empty [] if clear ID.
+- If 2+ species plausible, similar confidence (within 0.1). Unsure → genus level, confidence<0.7.
+- observations: ONLY what is visible, no interpretation.
+- issues: diagnostic interpretation of observations.
+- Each issue needs: category, likelihood, visibleEvidence, missingEvidence, alternativeExplanations, questionsToConfirm, recommendedNextStep, short treatment.
+- Categories: pest|fungal|bacterial|viral|nutritional|watering|light|temperature|mechanical|unknown
+- Low likelihood → only safe reversible actions. Never pesticides/fungicides/drastic pruning without high confidence.
+- Medium → cautious advice, confirm before aggressive action.
+- Toxicity verification: "verified"|"uncertain"|"unknown". confidence<0.7 → must be uncertain/unknown.
+- followUpQuestions: max 4, structured {id,question,type,options}. Only if answer would change diagnosis.
+- Types: yes_no, single_choice (2-5 options + "לא יודע/ת"), short_text.
+- Common Israeli plants: Bougainvillea, Plumbago, Lantana, Jasmine, Ficus, Citrus, Olive, Rosemary, Geranium.
+
+JSON for "success":
+{"status":"success","imageQuality":{"overall":"good|acceptable|poor","issues":[]},"observations":["..."],"identification":{"commonNameHe":"..","commonNameEn":"..","scientificName":"..","family":"..","confidence":0.85,"description":"1-2 sentences","uncertaintyNote":"if relevant","alternativeMatches":[{"scientificName":"..","commonNameHe":"..","commonNameEn":"..","confidence":0.5,"differentiatingFeature":".."}]},"healthAssessment":{"overallHealth":"excellent|good|fair|poor|critical","healthScore":80,"summary":".."},"issues":[{"name":"..","category":"..","likelihood":"high|medium|low","severity":"low|medium|high|urgent","visibleEvidence":[".."],"missingEvidence":[".."],"alternativeExplanations":[".."],"questionsToConfirm":[".."],"recommendedNextStep":"..","treatment":".."}],"followUpQuestions":[],"toxicity":{"verification":"..","forPets":{"toxic":false},"forHumans":{"toxic":false}}}`;
+
+// ── Stage 2 enrichment prompt (text-only, no image) ──
+const STAGE2_ENRICHMENT_PROMPT = `You are enriching a plant analysis with detailed care information. Return ONLY valid JSON. All text Hebrew. Be concise but helpful.
+
+You already have the plant identification and health assessment from Stage 1 (below). Your task is to add:
+1. careRecommendations — practical growing guidance
+2. seasonalCare — season-by-season tips
+3. funFacts — 3-4 interesting facts
+4. Detailed toxicity text (details field for pets and humans)
+
+Do NOT re-identify or re-diagnose the plant. Use the identification provided.
+
+TOXICITY SAFETY RULES:
+- Check the toxicity verification state and identification confidence provided below.
+- If verification is "uncertain" or "unknown": do NOT write definitive safe/non-toxic claims. Instead explain that toxicity status has not been verified and advise caution.
+- If identification confidence is below 0.7 or confidenceLevel indicates uncertainty: toxicity details must state explicitly that the identification is uncertain and therefore toxicity information may not apply.
+- Never convert uncertain data into definitive safety advice.
+
+JSON:
+{"careRecommendations":{"water":"..","light":"..","soil":"..","temperature":"..","fertilizer":"..","pruning":".."},"seasonalCare":{"spring":"..","summer":"..","autumn":"..","winter":".."},"funFacts":["..."],"toxicityDetails":{"forPets":{"details":".."},"forHumans":{"details":".."}}}`;
+
+// Select prompt based on feature flags
+function getAnalysisPrompt(options = {}) {
+  if (options.stage1) return STAGE1_PROMPT;
+  if (options.optimized) return OPTIMIZED_ANALYSIS_PROMPT;
+  return LEGACY_ANALYSIS_PROMPT;
+}
+
+// Backwards-compatible alias
+const ANALYSIS_PROMPT = LEGACY_ANALYSIS_PROMPT;
+
+function parseClaudeJson(text, errorLabel) {
+  let jsonStr = text.trim();
+  const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    jsonStr = fenceMatch[1].trim();
+  } else {
+    const braceStart = jsonStr.indexOf('{');
+    const braceEnd = jsonStr.lastIndexOf('}');
+    if (braceStart !== -1 && braceEnd > braceStart) {
+      jsonStr = jsonStr.substring(braceStart, braceEnd + 1);
+    }
+  }
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error(`Failed to parse ${errorLabel} (first 500 chars):`, text.substring(0, 500));
+    throw new Error('שגיאה בפענוח תשובת הניתוח. נסו שוב.');
+  }
+}
+
+function toMediaType(mimetype) {
+  if (mimetype === 'image/png') return 'image/png';
+  if (mimetype === 'image/webp') return 'image/webp';
+  if (mimetype === 'image/gif') return 'image/gif';
+  return 'image/jpeg';
+}
+
+async function analyzeWithClaude(imageBase64, mimetype, options = {}) {
+  const mediaType = toMediaType(mimetype);
+  const prompt = getAnalysisPrompt(options);
+  const maxTokens = options.stage1 ? 3000 : (options.optimized ? 4000 : 6000);
+  const promptLabel = options.stage1 ? 'stage1' : (options.optimized ? 'optimized' : 'legacy');
+  const model = 'claude-sonnet-4-6';
+
+  console.log(`[PROMPT] chars=${prompt.length} maxTokens=${maxTokens}`);
+  console.log(`[CLAUDE-REQUEST] prompt=${promptLabel} promptChars=${prompt.length} max_tokens=${maxTokens} model=${model} imagePayloadKB=${Math.round(imageBase64.length / 1024)}`);
 
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 6000,
+    model,
+    max_tokens: maxTokens,
     messages: [
       {
         role: 'user',
@@ -112,7 +232,7 @@ async function analyzeWithClaude(imageBase64, mimetype) {
           },
           {
             type: 'text',
-            text: ANALYSIS_PROMPT
+            text: prompt
           }
         ]
       }
@@ -128,26 +248,71 @@ async function analyzeWithClaude(imageBase64, mimetype) {
     throw new Error('לא התקבלה תשובה מהמודל');
   }
 
-  const text = textBlock.text.trim();
-  let jsonStr = text;
+  return parseClaudeJson(textBlock.text, 'Claude response');
+}
 
-  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  } else {
-    const braceStart = text.indexOf('{');
-    const braceEnd = text.lastIndexOf('}');
-    if (braceStart !== -1 && braceEnd > braceStart) {
-      jsonStr = text.substring(braceStart, braceEnd + 1);
+async function enrichWithClaude(stage1Result, enrichmentContext = {}) {
+  const toxVerification = stage1Result.toxicity?.verification || 'unknown';
+  const idConfidence = stage1Result.identification?.confidence || 0;
+  const confidenceLevel = stage1Result.identification?.confidenceLevel || '';
+  const plantNetDisagrees = enrichmentContext.plantNetSpeciesDisagreement || false;
+
+  const plantInfo = `Plant: ${stage1Result.identification?.scientificName || 'unknown'} (${stage1Result.identification?.commonNameHe || ''})
+Family: ${stage1Result.identification?.family || ''}
+Health: ${stage1Result.healthAssessment?.overallHealth || 'unknown'}
+Issues: ${(stage1Result.issues || []).map(i => i.name).join(', ') || 'none'}
+Toxic to pets: ${stage1Result.toxicity?.forPets?.toxic ?? 'unknown'}
+Toxic to humans: ${stage1Result.toxicity?.forHumans?.toxic ?? 'unknown'}
+Toxicity verification: ${toxVerification}
+Identification confidence: ${idConfidence}
+Confidence level: ${confidenceLevel}
+PlantNet species disagreement: ${plantNetDisagrees ? 'yes' : 'no'}`;
+
+  const fullPrompt = STAGE2_ENRICHMENT_PROMPT + '\n\nStage 1 result:\n' + plantInfo;
+  console.log(`[PROMPT] chars=${fullPrompt.length} maxTokens=2000`);
+  console.log(`[CLAUDE-REQUEST] prompt=stage2-enrichment promptChars=${fullPrompt.length} max_tokens=2000 model=claude-sonnet-4-6 imagePayloadKB=0`);
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    messages: [
+      {
+        role: 'user',
+        content: fullPrompt
+      }
+    ]
+  });
+
+  const textBlock = response.content.find(b => b.type === 'text');
+  if (!textBlock) {
+    throw new Error('לא התקבלה תשובה מהמודל (enrichment)');
+  }
+
+  return parseClaudeJson(textBlock.text, 'enrichment response');
+}
+
+function mergeStage2IntoResult(stage1, stage2) {
+  const merged = { ...stage1 };
+
+  if (stage2.careRecommendations) {
+    merged.careRecommendations = stage2.careRecommendations;
+  }
+  if (stage2.seasonalCare) {
+    merged.seasonalCare = stage2.seasonalCare;
+  }
+  if (stage2.funFacts && stage2.funFacts.length > 0) {
+    merged.funFacts = stage2.funFacts;
+  }
+  if (stage2.toxicityDetails && merged.toxicity) {
+    if (stage2.toxicityDetails.forPets?.details && merged.toxicity.forPets) {
+      merged.toxicity.forPets.details = stage2.toxicityDetails.forPets.details;
+    }
+    if (stage2.toxicityDetails.forHumans?.details && merged.toxicity.forHumans) {
+      merged.toxicity.forHumans.details = stage2.toxicityDetails.forHumans.details;
     }
   }
 
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.error('Failed to parse Claude response (first 500 chars):', text.substring(0, 500));
-    throw new Error('שגיאה בפענוח תשובת הניתוח. נסו שוב.');
-  }
+  return merged;
 }
 
 const REFINEMENT_PROMPT_PREFIX = `You are refining a previous plant diagnosis based on user answers to follow-up questions.
@@ -238,26 +403,7 @@ ${REFINEMENT_JSON_SCHEMA}`;
     throw new Error('לא התקבלה תשובה מהמודל');
   }
 
-  const text = textBlock.text.trim();
-  let jsonStr = text;
-
-  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  } else {
-    const braceStart = text.indexOf('{');
-    const braceEnd = text.lastIndexOf('}');
-    if (braceStart !== -1 && braceEnd > braceStart) {
-      jsonStr = text.substring(braceStart, braceEnd + 1);
-    }
-  }
-
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.error('Failed to parse refinement response (first 500 chars):', text.substring(0, 500));
-    throw new Error('שגיאה בפענוח תשובת העדכון. נסו שוב.');
-  }
+  return parseClaudeJson(textBlock.text, 'refinement response');
 }
 
 const FOLLOWUP_IMAGE_PROMPT = `You are refining a previous plant diagnosis based on a NEW follow-up image provided by the user.
@@ -368,26 +514,7 @@ ${JSON.stringify(answers, null, 2)}
     throw new Error('לא התקבלה תשובה מהמודל');
   }
 
-  const text = textBlock.text.trim();
-  let jsonStr = text;
-
-  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  } else {
-    const braceStart = text.indexOf('{');
-    const braceEnd = text.lastIndexOf('}');
-    if (braceStart !== -1 && braceEnd > braceStart) {
-      jsonStr = text.substring(braceStart, braceEnd + 1);
-    }
-  }
-
-  try {
-    return JSON.parse(jsonStr);
-  } catch (e) {
-    console.error('Failed to parse follow-up image response (first 500 chars):', text.substring(0, 500));
-    throw new Error('שגיאה בפענוח תשובת ניתוח הצילום הנוסף. נסו שוב.');
-  }
+  return parseClaudeJson(textBlock.text, 'follow-up image response');
 }
 
-module.exports = { analyzeWithClaude, refineWithClaude, analyzeFollowUpImage };
+module.exports = { analyzeWithClaude, enrichWithClaude, mergeStage2IntoResult, refineWithClaude, analyzeFollowUpImage };
