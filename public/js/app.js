@@ -79,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
       previewImage.src = e.target.result;
       uploadArea.hidden = true;
       previewArea.hidden = false;
+      uploadSection.hidden = false;
     };
     reader.readAsDataURL(file);
   }
@@ -87,8 +88,9 @@ document.addEventListener('DOMContentLoaded', () => {
     selectedFile = null;
     fileInput.value = '';
     previewImage.src = '';
-    uploadArea.hidden = false;
+    uploadArea.hidden = true;
     previewArea.hidden = true;
+    uploadSection.hidden = true;
   }
 
   function resetToUpload() {
@@ -108,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showSection(section) {
-    uploadSection.hidden = section !== 'upload';
+    uploadSection.hidden = !(section === 'upload' && selectedFile);
     loadingSection.hidden = section !== 'loading';
     resultsSection.hidden = section !== 'results';
     errorSection.hidden = section !== 'error';
