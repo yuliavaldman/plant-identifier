@@ -14,35 +14,57 @@
   <link rel="apple-touch-icon" href="/icon-192.svg">
 </head>
 <body>
+
+  <!-- Hero Section -->
   <header class="app-header">
     <div class="header-content">
-      <h1>🌿 PlantDoc</h1>
-      <p class="subtitle">זיהוי ואבחון צמחים חכם</p>
+      <div class="hero-logo">🌿</div>
+      <h1>PlantDoc</h1>
+      <p class="hero-headline">זהו כל צמח. אבחנו כל בעיה.</p>
+      <p class="hero-sub">צלמו צמח וקבלו זיהוי מדויק, אבחון בריאותי והמלצות טיפול — בשניות</p>
+      <div class="hero-cta">
+        <label class="btn btn-hero-primary native-only" for="cameraInput">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          צלמו עכשיו
+        </label>
+        <label class="btn btn-hero-primary web-only" for="fileInput">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          העלו תמונה
+        </label>
+        <label class="btn btn-hero-secondary native-only" for="fileInput">
+          בחרו מהגלריה
+        </label>
+      </div>
+    </div>
+    <div class="hero-decoration">
+      <div class="hero-leaf hero-leaf-1"></div>
+      <div class="hero-leaf hero-leaf-2"></div>
+      <div class="hero-leaf hero-leaf-3"></div>
     </div>
   </header>
 
   <main class="container">
+
+    <!-- Upload Section (hidden until file selected or drag-drop on web) -->
     <section class="upload-section" id="uploadSection">
       <div class="upload-area" id="uploadArea">
         <div class="upload-icon">
-          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M12 2L12 16M12 2L8 6M12 2L16 6"/>
-            <path d="M2 17L2 19C2 20.1 2.9 21 4 21L20 21C21.1 21 22 20.1 22 19L22 17"/>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+            <circle cx="12" cy="13" r="4"/>
           </svg>
         </div>
-        <h2 class="web-only">העלו תמונה של צמח</h2>
+        <h2 class="web-only">גררו תמונה לכאן</h2>
         <h2 class="native-only">צלמו צמח או בחרו מהגלריה</h2>
-        <p class="web-only">גררו תמונה לכאן או בחרו מהגלריה</p>
+        <p class="web-only">או לחצו לבחירה מהמחשב</p>
         <p class="native-only">צלמו את הצמח או בחרו תמונה קיימת</p>
         <div class="upload-buttons web-only">
           <label class="btn btn-primary" for="fileInput">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
             בחירת תמונה
           </label>
         </div>
         <div class="upload-buttons native-only">
           <label class="btn btn-primary" for="cameraInput">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
             צלם עכשיו
           </label>
           <label class="btn btn-secondary" for="fileInput">
@@ -69,26 +91,89 @@
       </div>
     </section>
 
-    <section class="loading-section" id="loadingSection" hidden>
-      <div class="loading-animation">
-        <div class="plant-grow">
-          <div class="stem"></div>
-          <div class="leaf leaf-1"></div>
-          <div class="leaf leaf-2"></div>
-          <div class="leaf leaf-3"></div>
+    <!-- Benefits Section -->
+    <section class="benefits-section" id="benefitsSection">
+      <div class="benefits-grid">
+        <div class="benefit-card">
+          <div class="benefit-icon">🌱</div>
+          <h3>זיהוי צמחים</h3>
+          <p>זיהוי אוטומטי של מאות מיני צמחים בעזרת בינה מלאכותית</p>
         </div>
-      </div>
-      <h3 class="loading-text" id="loadingText">מנתח את הצמח...</h3>
-      <p class="loading-sub">זיהוי מינים, בדיקת בריאות וניתוח מחלות</p>
-      <div class="loading-timer" id="loadingTimer"></div>
-      <div class="loading-steps">
-        <div class="step active" id="step1">🔍 מזהה את הצמח</div>
-        <div class="step" id="step2">🔬 בודק מחלות ומזיקים</div>
-        <div class="step" id="step3">🌡️ מנתח תנאי גידול</div>
-        <div class="step" id="step4">📋 מכין המלצות טיפול</div>
+        <div class="benefit-card">
+          <div class="benefit-icon">🔬</div>
+          <h3>אבחון בריאותי</h3>
+          <p>גילוי מחלות, מזיקים ובעיות תזונה עם דירוג חומרה</p>
+        </div>
+        <div class="benefit-card">
+          <div class="benefit-icon">💊</div>
+          <h3>המלצות טיפול</h3>
+          <p>הנחיות מותאמות אישית לטיפול, השקיה ותחזוקה</p>
+        </div>
       </div>
     </section>
 
+    <!-- How It Works -->
+    <section class="how-section" id="howSection">
+      <h2>איך זה עובד?</h2>
+      <div class="how-steps">
+        <div class="how-step">
+          <div class="how-number">1</div>
+          <div class="how-content">
+            <h4>מעלים תמונה</h4>
+            <p>העלו תמונה של הצמח מהמחשב או מהטלפון</p>
+          </div>
+        </div>
+        <div class="how-step">
+          <div class="how-number">2</div>
+          <div class="how-content">
+            <h4>מנתחים</h4>
+            <p>הבינה המלאכותית מזהה ובודקת את הצמח</p>
+          </div>
+        </div>
+        <div class="how-step">
+          <div class="how-number">3</div>
+          <div class="how-content">
+            <h4>מקבלים תובנות</h4>
+            <p>זיהוי, אבחון והמלצות טיפול מפורטות</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Loading Section -->
+    <section class="loading-section" id="loadingSection" hidden>
+      <div class="loading-card">
+        <div class="loading-progress-bar">
+          <div class="loading-progress-fill" id="loadingProgressFill"></div>
+        </div>
+        <div class="loading-animation">
+          <div class="loading-spinner"></div>
+        </div>
+        <h3 class="loading-text" id="loadingText">מעלה תמונה...</h3>
+        <p class="loading-sub" id="loadingSub">זיהוי מינים, בדיקת בריאות וניתוח מחלות</p>
+        <div class="loading-timer" id="loadingTimer"></div>
+        <div class="loading-steps">
+          <div class="step" id="step1">
+            <span class="step-icon" id="step1Icon">🔍</span>
+            <span class="step-label">מזהה את הצמח</span>
+          </div>
+          <div class="step" id="step2">
+            <span class="step-icon" id="step2Icon">🔬</span>
+            <span class="step-label">בודק מחלות ומזיקים</span>
+          </div>
+          <div class="step" id="step3">
+            <span class="step-icon" id="step3Icon">🌡️</span>
+            <span class="step-label">מנתח תנאי גידול</span>
+          </div>
+          <div class="step" id="step4">
+            <span class="step-icon" id="step4Icon">📋</span>
+            <span class="step-label">מכין המלצות טיפול</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results Section (unchanged structure) -->
     <section class="results-section" id="resultsSection" hidden>
       <div class="results-header">
         <h2>תוצאות הניתוח</h2>
@@ -209,8 +294,9 @@
       </div>
     </section>
 
+    <!-- History (compact, at bottom) -->
     <section class="history-section" id="historySection">
-      <h2>📜 היסטוריית סריקות</h2>
+      <h2>היסטוריית סריקות</h2>
       <div class="history-list" id="historyList">
         <p class="history-empty">טרם בוצעו סריקות</p>
       </div>
@@ -223,7 +309,7 @@
   </footer>
 
   <script src="js/config.js"></script>
-  <script src="js/app.js"></script>
+  <script src="js/app.js" defer></script>
   <script>
     if ('serviceWorker' in navigator && !PlantDocConfig.IS_NATIVE) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});

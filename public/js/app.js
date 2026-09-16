@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const errorSection = document.getElementById('errorSection');
   const newScanBtn = document.getElementById('newScanBtn');
   const retryBtn = document.getElementById('retryBtn');
+  const benefitsSection = document.getElementById('benefitsSection');
+  const howSection = document.getElementById('howSection');
+  const historySection = document.getElementById('historySection');
 
   let selectedFile = null;
   let currentJobId = null;
@@ -110,6 +113,11 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsSection.hidden = section !== 'results';
     errorSection.hidden = section !== 'error';
 
+    const isHome = section === 'upload';
+    if (benefitsSection) benefitsSection.hidden = !isHome;
+    if (howSection) howSection.hidden = !isHome;
+    if (historySection) historySection.hidden = !isHome;
+
     if (section === 'results' || section === 'error') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -151,48 +159,80 @@ document.addEventListener('DOMContentLoaded', () => {
     showSection('error');
   }
 
+  function resetLoadingState() {
+    const steps = ['step1', 'step2', 'step3', 'step4'];
+    const icons = ['🔍', '🔬', '🌡️', '📋'];
+    steps.forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove('active', 'done');
+      const iconEl = document.getElementById(id + 'Icon');
+      if (iconEl) iconEl.textContent = icons[i];
+    });
+    const progressFill = document.getElementById('loadingProgressFill');
+    if (progressFill) progressFill.style.width = '0%';
+    const loadingText = document.getElementById('loadingText');
+    if (loadingText) loadingText.textContent = 'מעלה תמונה...';
+    const loadingSub = document.getElementById('loadingSub');
+    if (loadingSub) loadingSub.textContent = 'זיהוי מינים, בדיקת בריאות וניתוח מחלות';
+  }
+
   async function analyzeImage() {
     if (!selectedFile) return;
 
     analyzeBtn.disabled = true;
+    analyzeBtn.classList.add('btn-loading');
+    resetLoadingState();
     showSection('loading');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 
     const steps = ['step1', 'step2', 'step3', 'step4'];
     const stepLabels = ['מזהה את הצמח', 'בודק מחלות ומזיקים', 'מנתח תנאי גידול', 'מכין המלצות טיפול'];
-    const waitingMessages = [
+    const loadingMessages = [
+      'מעלה תמונה...',
+      'מזהה את הצמח...',
+      'בודק מחלות ומזיקים...',
+      'מנתח תנאי גידול...',
+      'מכין המלצות...',
       'מעמיק בניתוח...',
-      'בודק מאגרי מידע בוטניים...',
-      'משווה דגימות דומות...',
-      'מרכיב תוצאות מפורטות...',
-      'כמעט שם...',
-      'מסיים את העיבוד...'
+      'כמעט שם...'
     ];
     let currentStep = 0;
-    let waitingIdx = 0;
+    let msgIdx = 0;
     let elapsedSeconds = 0;
 
+    const progressFill = document.getElementById('loadingProgressFill');
     const timerEl = document.getElementById('loadingTimer');
     if (timerEl) timerEl.textContent = '';
+
     const timerInterval = setInterval(() => {
       elapsedSeconds++;
-      if (timerEl) timerEl.textContent = elapsedSeconds + ' שניות';
+      if (timerEl && elapsedSeconds >= 3) timerEl.textContent = elapsedSeconds + ' שניות';
+      if (progressFill) {
+        const pct = Math.min(92, 8 + elapsedSeconds * 1.4);
+        progressFill.style.width = pct + '%';
+      }
     }, 1000);
 
     const stepInterval = setInterval(() => {
       if (currentStep > 0 && currentStep <= steps.length) {
         const prev = document.getElementById(steps[currentStep - 1]);
-        prev.classList.remove('active');
-        prev.classList.add('done');
-        prev.textContent = '✅ ' + stepLabels[currentStep - 1];
+        if (prev) {
+          prev.classList.remove('active');
+          prev.classList.add('done');
+          const prevIcon = document.getElementById(steps[currentStep - 1] + 'Icon');
+          if (prevIcon) prevIcon.textContent = '✅';
+        }
       }
       if (currentStep < steps.length) {
-        document.getElementById(steps[currentStep]).classList.add('active');
+        const cur = document.getElementById(steps[currentStep]);
+        if (cur) cur.classList.add('active');
         currentStep++;
-      } else {
-        document.getElementById('loadingText').textContent = waitingMessages[waitingIdx % waitingMessages.length];
-        waitingIdx++;
       }
-    }, 4000);
+      msgIdx++;
+      const loadingText = document.getElementById('loadingText');
+      if (loadingText) loadingText.textContent = loadingMessages[Math.min(msgIdx, loadingMessages.length - 1)];
+    }, 2500);
 
     try {
       const formData = new FormData();
@@ -246,6 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       clearInterval(stepInterval);
       clearInterval(timerInterval);
+      if (progressFill) progressFill.style.width = '100%';
 
       const status = data.analysis?.status;
 
@@ -284,6 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     analyzeBtn.disabled = false;
+    analyzeBtn.classList.remove('btn-loading');
   }
 
   function renderResults(data) {
@@ -1404,6 +1446,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  checkApiStatus();
   renderHistory();
+  setTimeout(checkApiStatus, 2000);
 });
