@@ -90,8 +90,8 @@ JSON for "success":
   "funFacts": ["..."]
 }`;
 
-// ── Compact optimized prompt (same schema, enforced brevity, benchmarked 43% faster) ──
-const OPTIMIZED_ANALYSIS_PROMPT = `Botanist. Return ONLY valid JSON. Hebrew. Maximum brevity.
+// ── Balanced compact prompt (concise + practical depth, benchmarked) ──
+const OPTIMIZED_ANALYSIS_PROMPT = `Botanist. Return ONLY valid JSON. Hebrew. Concise but practically useful.
 
 CLASSIFY:
 - No plant → {"status":"not_a_plant","message":"..."}
@@ -104,26 +104,28 @@ RULES:
 - Never invent species/disease/pest. Evidence only.
 - alternativeMatches: only genuinely plausible, else [].
 - 2+ plausible species → similar confidence. Unsure → genus, confidence<0.7.
-- observations: visible facts only, max 3 short items.
+- observations: visible facts only, max 3 items.
 - issues: diagnosis from observations.
 - Categories: pest|fungal|bacterial|viral|nutritional|watering|light|temperature|mechanical|unknown
-- Low likelihood → safe reversible actions only.
+- Low likelihood → safe reversible actions only. No pesticides/fungicides/drastic pruning.
+- Medium likelihood → cautious advice, confirm before aggressive action.
 - Toxicity verification: "verified"|"uncertain"|"unknown". confidence<0.7 → uncertain/unknown.
 - followUpQuestions: max 3, only if answer changes diagnosis. {id,question,type,options}.
 
-BREVITY RULES:
-- description: 1 sentence max.
-- observations: max 3 items, each under 10 words.
-- visibleEvidence: max 3 short items.
+OUTPUT DEPTH:
+- description: 1-2 sentences.
+- observations: max 3 items.
+- visibleEvidence: max 3 items.
 - missingEvidence: max 2 items.
 - alternativeExplanations: max 2 items.
 - questionsToConfirm: max 2 items.
-- treatment: 1-2 actionable sentences, no prose.
-- recommendedNextStep: 1 short sentence.
-- careRecommendations: each value 1 sentence max.
-- seasonalCare: each season 1 sentence max.
-- funFacts: max 1 item, 1 sentence.
+- treatment: 3-5 concrete numbered steps. Include: immediate action, what to monitor, when to reassess. No long prose.
+- recommendedNextStep: 1 practical actionable sentence the user can do right now.
+- careRecommendations: each value 1-2 practical sentences focused on what the user should do.
+- seasonalCare: each season 1-2 short sentences.
+- funFacts: max 1 item.
 - summary: 1 sentence.
+- Healthy plants: brief summary + key care tips. Do not invent long essays.
 - No repeated caveats. No filler text.
 
 JSON "success":
@@ -219,7 +221,7 @@ async function analyzeWithClaude(imageBase64, mimetype, options = {}) {
   const mediaType = toMediaType(mimetype);
   const prompt = getAnalysisPrompt(options);
   const maxTokens = options.stage1 ? 3000 : (options.optimized ? 2200 : 6000);
-  const promptLabel = options.stage1 ? 'stage1' : (options.optimized ? 'compact' : 'legacy');
+  const promptLabel = options.stage1 ? 'stage1' : (options.optimized ? 'balanced' : 'legacy');
   const model = 'claude-sonnet-4-6';
 
   console.log(`[PROMPT] chars=${prompt.length} maxTokens=${maxTokens}`);
