@@ -1,5 +1,5 @@
-const CACHE_NAME = 'plantdoc-v13';
-const STATIC_ASSETS = ['/', '/css/styles.css', '/js/app.js', '/manifest.json'];
+const CACHE_NAME = 'plantdoc-v14';
+const STATIC_ASSETS = ['/', '/css/styles.css', '/js/config.js', '/js/app.js', '/manifest.json'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

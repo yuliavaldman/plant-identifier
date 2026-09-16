@@ -5,3 +5,11 @@ plantdoc-audit.zip
 plantdoc-phase2-review.zip
 _backup_phase1/
 *.log
+
+# Android build artifacts
+android/app/build/
+android/.gradle/
+android/build/
+android/local.properties
+*.apk
+*.aab

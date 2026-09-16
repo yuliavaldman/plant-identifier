@@ -1,0 +1,8 @@
+{
+  "appId": "com.plantdoc.app",
+  "appName": "PlantDoc",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https"
+  }
+}

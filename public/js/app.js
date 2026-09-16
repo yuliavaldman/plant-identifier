@@ -46,6 +46,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  const cameraInput = document.getElementById('cameraInput');
+  if (cameraInput) {
+    cameraInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        handleFile(e.target.files[0]);
+      }
+    });
+  }
+
   clearBtn.addEventListener('click', resetUpload);
   analyzeBtn.addEventListener('click', analyzeImage);
   newScanBtn.addEventListener('click', resetToUpload);
@@ -189,7 +198,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('image', selectedFile);
 
-      const uploadRes = await fetch('/api/analyze', {
+      const uploadRes = await fetch(PlantDocConfig.API_BASE_URL + '/api/analyze', {
         method: 'POST',
         body: formData
       });
@@ -210,7 +219,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const poll = setInterval(async () => {
           attempts++;
           try {
-            const pollRes = await fetch('/api/result/' + jobId);
+            const pollRes = await fetch(PlantDocConfig.API_BASE_URL + '/api/result/' + jobId);
             const result = await pollRes.json();
 
             if (result.status === 'done') {
@@ -746,7 +755,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (loading) loading.hidden = false;
 
     try {
-      const res = await fetch('/api/refine-diagnosis', {
+      const res = await fetch(PlantDocConfig.API_BASE_URL + '/api/refine-diagnosis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId: currentJobId, answers })
@@ -972,7 +981,7 @@ document.addEventListener('DOMContentLoaded', () => {
       formData.append('image', followUpSelectedFile);
       formData.append('jobId', currentJobId);
 
-      const res = await fetch('/api/analyze-followup-image', {
+      const res = await fetch(PlantDocConfig.API_BASE_URL + '/api/analyze-followup-image', {
         method: 'POST',
         body: formData
       });
@@ -1382,7 +1391,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Check API status on load
   async function checkApiStatus() {
     try {
-      const res = await fetch('/api/health');
+      const res = await fetch(PlantDocConfig.API_BASE_URL + '/api/health');
       const data = await res.json();
       if (!data.anthropicKey) {
         const note = document.querySelector('.upload-note');
